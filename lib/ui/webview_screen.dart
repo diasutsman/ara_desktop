@@ -176,7 +176,7 @@ class _WebViewScreenState extends State<WebViewScreen> {
             // Main Webview
             InAppWebView(
               initialUrlRequest: URLRequest(
-                url: WebUri('https://ara-assessment.com'),
+                url: WebUri('https://ara-assessment.com/assess'),
               ),
               initialSettings: InAppWebViewSettings(
                 javaScriptEnabled: true,

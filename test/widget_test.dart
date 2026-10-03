@@ -57,8 +57,16 @@ void main() {
       detector.evaluateUrl('https://ara-assessment.com/exam/question/1');
       expect(kiosk.currentMode, AssessmentMode.strictExam);
 
-      detector.evaluateUrl('https://ara-assessment.com/assessment/live');
+      detector.evaluateUrl('https://ara-assessment.com/soal/1');
       expect(kiosk.currentMode, AssessmentMode.strictExam);
+    });
+
+    test('evaluateUrl recognizes base assess landing as normal', () {
+      detector.evaluateUrl('https://ara-assessment.com/assess');
+      expect(kiosk.currentMode, AssessmentMode.normal);
+
+      detector.evaluateUrl('https://ara-assessment.com/assess/');
+      expect(kiosk.currentMode, AssessmentMode.normal);
     });
 
     test('evaluateUrl recognizes essay routes', () {

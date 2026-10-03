@@ -17,12 +17,16 @@ void main() async {
       size: Size(1366, 768),
       minimumSize: Size(1024, 600),
       center: true,
-      backgroundColor: Colors.black,
+      backgroundColor: Colors.white,
       skipTaskbar: false,
       title: 'ARA Assessment',
+      titleBarStyle: TitleBarStyle.normal, // Standard window title bar with close (silang) button
     );
 
     await windowManager.waitUntilReadyToShow(windowOptions, () async {
+      await windowManager.setFullScreen(false);
+      await windowManager.setAlwaysOnTop(false);
+      await windowManager.setPreventClose(false);
       await windowManager.show();
       await windowManager.focus();
     });
@@ -35,7 +39,7 @@ void main() async {
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
-      statusBarIconBrightness: Brightness.light,
+      statusBarIconBrightness: Brightness.dark,
       systemNavigationBarColor: Colors.black,
       systemNavigationBarIconBrightness: Brightness.light,
     ),
@@ -53,11 +57,11 @@ class AraAssessmentApp extends StatelessWidget {
       title: 'ARA Assessment',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        brightness: Brightness.dark,
-        scaffoldBackgroundColor: Colors.black,
-        colorScheme: const ColorScheme.dark(
-          primary: Color(0xFF605CA8),
-          surface: Colors.black,
+        brightness: Brightness.light,
+        scaffoldBackgroundColor: Colors.white,
+        colorScheme: const ColorScheme.light(
+          primary: Color(0xFF00AEF0),
+          surface: Colors.white,
         ),
         useMaterial3: true,
       ),

@@ -21,33 +21,47 @@ class AssessmentDetector {
 
       // Periodic DOM observer to detect essay indicators or exam buttons
       function detectStateFromDOM() {
-        var currentUrl = window.location.href.toLowerCase();
+        var pathname = window.location.pathname.toLowerCase();
         var bodyText = document.body ? document.body.innerText.toLowerCase() : '';
 
+        // Check if on Landing, Login, Register, or Dashboard pages (Normal mode)
+        var isNormal = pathname === '' ||
+                       pathname === '/' ||
+                       pathname === '/assess' ||
+                       pathname === '/assess/' ||
+                       pathname.indexOf('/login') !== -1 ||
+                       pathname.indexOf('/register') !== -1 ||
+                       pathname.indexOf('/dashboard') !== -1 ||
+                       pathname.indexOf('/selesai') !== -1 ||
+                       pathname.indexOf('/finish') !== -1;
+
+        if (isNormal) {
+          if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
+            window.flutter_inappwebview.callHandler('onAssessmentStateChange', 'normal');
+          }
+          return;
+        }
+
         // Check if page contains essay-specific elements or text
-        var isEssay = currentUrl.indexOf('essay') !== -1 ||
-                      currentUrl.indexOf('esai') !== -1 ||
+        var isEssay = pathname.indexOf('/essay') !== -1 ||
+                      pathname.indexOf('/esai') !== -1 ||
+                      pathname.indexOf('/uraian') !== -1 ||
                       document.getElementById('answerText') !== null ||
                       document.querySelector('.cke_editor_answerText') !== null ||
                       (bodyText.indexOf('soal essay') !== -1 || bodyText.indexOf('soal esai') !== -1);
 
-        // Check if page is inside active exam
-        var isExam = currentUrl.indexOf('/ujian') !== -1 ||
-                     currentUrl.indexOf('/exam') !== -1 ||
-                     currentUrl.indexOf('/assessment') !== -1 ||
-                     currentUrl.indexOf('/soal') !== -1 ||
+        // Check if page is inside an active exam session
+        var isExam = pathname.indexOf('/ujian') !== -1 ||
+                     pathname.indexOf('/exam') !== -1 ||
+                     pathname.indexOf('/soal') !== -1 ||
+                     pathname.indexOf('/test') !== -1 ||
+                     pathname.indexOf('/mulai') !== -1 ||
+                     pathname.indexOf('/kerjakan') !== -1 ||
                      document.querySelector('.timer') !== null ||
                      document.querySelector('.exam-timer') !== null;
 
-        var isFinished = currentUrl.indexOf('/selesai') !== -1 ||
-                         currentUrl.indexOf('/finish') !== -1 ||
-                         currentUrl.indexOf('/dashboard') !== -1 ||
-                         currentUrl.indexOf('/login') !== -1;
-
         if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
-          if (isFinished) {
-            window.flutter_inappwebview.callHandler('onAssessmentStateChange', 'normal');
-          } else if (isEssay) {
+          if (isEssay) {
             window.flutter_inappwebview.callHandler('onAssessmentStateChange', 'essay');
           } else if (isExam) {
             window.flutter_inappwebview.callHandler('onAssessmentStateChange', 'strict');
@@ -75,29 +89,42 @@ class AssessmentDetector {
   }
 
   void evaluateUrl(String url) {
-    final lower = url.toLowerCase();
-    debugPrint('[AssessmentDetector] Navigated to URL: $lower');
+    final uri = Uri.tryParse(url);
+    if (uri == null) return;
 
-    if (lower.contains('/selesai') ||
-        lower.contains('/finish') ||
-        lower.contains('/dashboard') ||
-        lower.contains('/login') ||
-        lower.endsWith('ara-assessment.com/') ||
-        lower == 'https://ara-assessment.com') {
+    final path = uri.path.toLowerCase();
+    debugPrint('[AssessmentDetector] Evaluated URL path: $path (full: $url)');
+
+    // 1. Normal / Landing / Login / Dashboard / Finished
+    if (path == '' ||
+        path == '/' ||
+        path == '/assess' ||
+        path == '/assess/' ||
+        path.contains('/login') ||
+        path.contains('/register') ||
+        path.contains('/dashboard') ||
+        path.contains('/selesai') ||
+        path.contains('/finish')) {
       _kioskService.setMode(AssessmentMode.normal);
       return;
     }
 
-    if (lower.contains('/essay') || lower.contains('/esai')) {
+    // 2. Essay Exam routes
+    if (path.contains('/essay') ||
+        path.contains('/esai') ||
+        path.contains('/uraian')) {
       _kioskService.setMode(AssessmentMode.essayExam);
       return;
     }
 
-    if (lower.contains('/ujian') ||
-        lower.contains('/exam') ||
-        lower.contains('/assessment') ||
-        lower.contains('/soal') ||
-        lower.contains('/test')) {
+    // 3. Strict Exam routes
+    if (path.contains('/ujian') ||
+        path.contains('/exam') ||
+        path.contains('/soal') ||
+        path.contains('/test') ||
+        path.contains('/mulai') ||
+        path.contains('/kerjakan') ||
+        path.contains('/start')) {
       _kioskService.setMode(AssessmentMode.strictExam);
       return;
     }
