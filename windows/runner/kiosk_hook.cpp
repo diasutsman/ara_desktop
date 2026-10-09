@@ -11,12 +11,14 @@
 namespace {
 
 HHOOK g_keyboardHook = nullptr;
-bool g_isKioskHookActive = false;
+HWND g_mainWindowHandle = nullptr;
+bool g_isAltTabBlocked = false;
+bool g_isWindowControlsLocked = false;
 std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> g_kioskChannel;
 
 // Low-level keyboard hook callback to intercept system shortcuts
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
-  if (nCode == HC_ACTION && g_isKioskHookActive) {
+  if (nCode == HC_ACTION && g_isAltTabBlocked) {
     KBDLLHOOKSTRUCT* pKey = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
     bool isAltDown = (pKey->flags & LLKHF_ALTDOWN) != 0;
 
@@ -55,7 +57,7 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
 }  // namespace
 
 void SetKioskHookEnabled(bool enabled) {
-  g_isKioskHookActive = enabled;
+  g_isAltTabBlocked = enabled;
 
   if (enabled) {
     if (g_keyboardHook == nullptr) {
@@ -75,17 +77,63 @@ void SetKioskHookEnabled(bool enabled) {
   }
 }
 
+void SetWindowControlsLocked(bool locked) {
+  g_isWindowControlsLocked = locked;
+  std::cout << "[KioskHook] Win32 Window Controls Lock set to: " << (locked ? "LOCKED" : "UNLOCKED") << std::endl;
+}
+
 void CleanupKioskHook() {
   SetKioskHookEnabled(false);
+  SetWindowControlsLocked(false);
   g_kioskChannel = nullptr;
 }
 
-bool IsKioskWindowLocked() {
-  return g_isKioskHookActive;
+bool IsWindowControlsLocked() {
+  return g_isWindowControlsLocked;
 }
 
-void RegisterKioskHookChannel(flutter::BinaryMessenger* messenger) {
+void ForceWindowToForeground(HWND hwnd) {
+  if (hwnd == nullptr) {
+    hwnd = g_mainWindowHandle;
+  }
+  if (hwnd == nullptr || !::IsWindow(hwnd)) return;
+
+  HWND hForegroundWnd = ::GetForegroundWindow();
+  if (hForegroundWnd == hwnd) return;
+
+  DWORD dwCurID = ::GetCurrentThreadId();
+  DWORD dwTargetID = hForegroundWnd ? ::GetWindowThreadProcessId(hForegroundWnd, nullptr) : 0;
+
+  // 1. Attach input queues to bypass Windows ASFW Foreground Lockout
+  if (dwTargetID != 0 && dwCurID != dwTargetID) {
+    ::AttachThreadInput(dwCurID, dwTargetID, TRUE);
+  }
+
+  // 2. Bring window to topmost briefly then back to normal to pierce Z-order
+  ::SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+  ::SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+
+  // 3. Show, activate, and focus window
+  ::ShowWindow(hwnd, SW_SHOW);
+  ::BringWindowToTop(hwnd);
+  ::SetForegroundWindow(hwnd);
+  ::SetActiveWindow(hwnd);
+  ::SetFocus(hwnd);
+
+  // 4. Detach thread input
+  if (dwTargetID != 0 && dwCurID != dwTargetID) {
+    ::AttachThreadInput(dwCurID, dwTargetID, FALSE);
+  }
+  std::cout << "[KioskHook] ForceWindowToForeground executed successfully for HWND: " << hwnd << std::endl;
+}
+
+void RegisterKioskHookChannel(flutter::BinaryMessenger* messenger, HWND windowHandle) {
   if (messenger == nullptr) return;
+
+  if (windowHandle != nullptr) {
+    g_mainWindowHandle = windowHandle;
+    std::cout << "[KioskHook] Main window HWND registered: " << windowHandle << std::endl;
+  }
 
   g_kioskChannel = std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
       messenger,
@@ -113,8 +161,29 @@ void RegisterKioskHookChannel(flutter::BinaryMessenger* messenger) {
           }
           SetKioskHookEnabled(enable);
           result->Success(flutter::EncodableValue(true));
+        } else if (method == "setWindowLock") {
+          bool lock = false;
+          const auto* args = call.arguments();
+          if (args != nullptr) {
+            if (std::holds_alternative<bool>(*args)) {
+              lock = std::get<bool>(*args);
+            } else if (std::holds_alternative<flutter::EncodableMap>(*args)) {
+              const auto& map = std::get<flutter::EncodableMap>(*args);
+              auto it = map.find(flutter::EncodableValue("locked"));
+              if (it != map.end() && std::holds_alternative<bool>(it->second)) {
+                lock = std::get<bool>(it->second);
+              }
+            }
+          }
+          SetWindowControlsLocked(lock);
+          result->Success(flutter::EncodableValue(true));
+        } else if (method == "forceForeground") {
+          ForceWindowToForeground(g_mainWindowHandle);
+          result->Success(flutter::EncodableValue(true));
         } else if (method == "isHookActive") {
-          result->Success(flutter::EncodableValue(g_isKioskHookActive));
+          result->Success(flutter::EncodableValue(g_isAltTabBlocked));
+        } else if (method == "isWindowLocked") {
+          result->Success(flutter::EncodableValue(g_isWindowControlsLocked));
         } else if (method == "cleanup") {
           CleanupKioskHook();
           result->Success(flutter::EncodableValue(true));

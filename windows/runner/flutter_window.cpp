@@ -26,7 +26,7 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
-  RegisterKioskHookChannel(flutter_controller_->engine()->messenger());
+  RegisterKioskHookChannel(flutter_controller_->engine()->messenger(), GetHandle());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
@@ -55,8 +55,8 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
-  // If Kiosk Lockdown is active, block toolbar double-click, minimize, restore, resize, drag, and close!
-  if (IsKioskWindowLocked()) {
+  // If Window Controls Lock is active, block toolbar double-click, minimize, restore, resize, drag, and close!
+  if (IsWindowControlsLocked()) {
     switch (message) {
       // 1. Block double-clicking anywhere on the top toolbar / title bar / caption / borders
       case WM_NCLBUTTONDBLCLK:

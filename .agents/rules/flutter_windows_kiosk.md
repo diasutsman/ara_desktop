@@ -44,3 +44,30 @@
     - Set `setTitleBarStyle(TitleBarStyle.hidden, windowButtonVisibility: false)`
     - Set `setResizable(false)`, `setMinimizable(false)`, dan `setMaximizable(false)`
     - Set `setFullScreen(true)` dan `setAlwaysOnTop(true)`.
+
+## 6. Essay Mode Kiosk Pattern (Taskbar Access & Whitelist Enforcer)
+- **Window Geometry**: Gunakan `setFullScreen(false)` + `maximize()` + `setTitleBarStyle(TitleBarStyle.hidden)` agar Taskbar Windows tetap terbuka untuk mengakses Word/PPT, namun jendela ujian tidak memiliki kontrol untuk ditutup, diminimalkan, atau di-resize.
+- **Controls Locking**: Tetap aktifkan kunci Win32 (`SC_CLOSE`, `SC_MINIMIZE`, `SC_RESTORE`, `WM_NCLBUTTONDBLCLK`) pada jendela ujian di Mode Essay melalui `SetWindowControlsLocked(true)`.
+- **Aggressive Unauthorized App Minimization & Refocus**:
+  - JANGAN sertakan browser (`chrome.exe`, `msedge.exe`, `firefox.exe`, dll.) pada whitelist apa pun.
+  - Saat proses non-whitelist terdeteksi di foreground (polling 200ms), minimalkan seketika (`ShowWindow(hwnd, SW_MINIMIZE)`) dan panggil `windowManager.focus()` untuk mengembalikan jendela ujian ke depan.
+  - Izinkan `winword.exe`, `powerpnt.exe`, serta komponen Windows Shell (`explorer.exe`, `startmenuexperiencehost.exe`) agar taskbar dan menu aplikasi bekerja dengan mulus.
+
+## 7. Elevated Process & Zero-Name Watchdog Hardening
+- Jangan pernah mengabaikan proses tanpa nama (`processExe.isEmpty`). Jika `activePid != ownPid` dan nama proses kosong, baca class jendela (`GetClassName`).
+- Jika class jendela bukan class shell inti (`Shell_TrayWnd`, `Shell_SecondaryTrayWnd`, `Progman`, `WorkerW`), anggap proses tersebut sebagai aplikasi sistem elevated/terlarang (misal Device Manager / MMC, Regedit, Admin Console) dan segera blokir/minimalkan.
+
+## 8. Native Win32 Foreground Takeover (ASFW Lockout Bypass)
+- Jangan hanya mengandalkan `windowManager.focus()` saat ada aplikasi pihak ketiga (Word/PPT) yang diizinkan di Mode Essay.
+- Di Windows OS, meminimalkan aplikasi terlarang (misal Excel) saat PowerPoint aktif akan mengaktifkan PowerPoint karena urutan Z-Order. Panggilan `SetForegroundWindow` dari background diblokir oleh Windows OS melalui *AllowSetForegroundWindow (ASFW)*.
+- Implementasikan fungsi native C++ dengan `AttachThreadInput` ke thread jendela foreground saat ini, lalu naikkan jendela ke `HWND_TOPMOST` kemudian `HWND_NOTOPMOST`, panggil `SetForegroundWindow`, lalu lepas `AttachThreadInput`.
+- Ini menjamin aplikasi ujian dapat langsung merebut fokus layar penuh ketika aplikasi terlarang (seperti Excel) diminimalkan.
+
+## 9. Explorer.exe Class Filtering (Taskbar vs File Explorer)
+- Saat mengizinkan `explorer.exe` untuk taskbar di Mode Essay, selalu validasi `className`:
+  - `Shell_TrayWnd`, `Shell_SecondaryTrayWnd`, `Progman`, `WorkerW`: **ALLOWED** (Taskbar/Desktop)
+  - `CabinetWClass`, `ExploreWClass`: **BLOCKED** (Jendela Folder File Explorer)
+  - `#32770` dengan judul Run: **BLOCKED** (Kotak Dialog Run `Win+R`)
+
+## 10. UWP Application Minimization
+- Untuk meminimalkan aplikasi UWP Windows 10/11 (`ApplicationFrameHost.exe`), selalu kirim `PostMessage(hwnd, WM_SYSCOMMAND, const WPARAM(SC_MINIMIZE), const LPARAM(0))` bersamaan dengan `ShowWindow(hwnd, SW_MINIMIZE)`.

@@ -1,0 +1,285 @@
+import 'package:flutter_test/flutter_test.dart';
+import 'package:ara_desktop/services/kiosk_security_service.dart';
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  group('Kiosk Security Policy & Exploit Patch Tests', () {
+    late KioskSecurityService service;
+
+    setUp(() {
+      service = KioskSecurityService();
+      service.isDevMode = true;
+      service.devBypassLockdown = false;
+    });
+
+    // -------------------------------------------------------------
+    // EXPLOIT 1 & 6: Elevated Processes with Empty Exe Name (Device Manager, Regedit, Task Manager)
+    // -------------------------------------------------------------
+    group('Exploit 1 & 6: Elevated Process & Empty Executable Name', () {
+      test('Device Manager (MMCMainFrame) with empty process name MUST be blocked in Strict Mode', () {
+        final eval = service.evaluateWindowPolicy(
+          mode: AssessmentMode.strictExam,
+          processExe: '',
+          className: 'MMCMainFrame',
+          windowTitle: 'Device Manager',
+          isOwnProcess: false,
+          isDevBypass: false,
+        );
+        expect(eval.isBlocked, isTrue);
+        expect(eval.reason, contains('Aplikasi sistem atau elevated'));
+      });
+
+      test('Device Manager (MMCMainFrame) with empty process name MUST be blocked in Essay Mode', () {
+        final eval = service.evaluateWindowPolicy(
+          mode: AssessmentMode.essayExam,
+          processExe: '',
+          className: 'MMCMainFrame',
+          windowTitle: 'Device Manager',
+          isOwnProcess: false,
+          isDevBypass: false,
+        );
+        expect(eval.isBlocked, isTrue);
+        expect(eval.reason, contains('Aplikasi sistem atau elevated'));
+      });
+
+      test('Registry Editor (RegEdit_RegEdit) with empty process name MUST be blocked', () {
+        final eval = service.evaluateWindowPolicy(
+          mode: AssessmentMode.essayExam,
+          processExe: '',
+          className: 'RegEdit_RegEdit',
+          windowTitle: 'Registry Editor',
+          isOwnProcess: false,
+          isDevBypass: false,
+        );
+        expect(eval.isBlocked, isTrue);
+      });
+
+      test('Taskbar (Shell_TrayWnd) with empty process name is ALLOWED so student can see taskbar', () {
+        final eval = service.evaluateWindowPolicy(
+          mode: AssessmentMode.essayExam,
+          processExe: '',
+          className: 'Shell_TrayWnd',
+          windowTitle: '',
+          isOwnProcess: false,
+          isDevBypass: false,
+        );
+        expect(eval.isAllowed, isTrue);
+      });
+
+      test('Desktop (Progman / WorkerW) with empty process name is ALLOWED', () {
+        final eval = service.evaluateWindowPolicy(
+          mode: AssessmentMode.essayExam,
+          processExe: '',
+          className: 'WorkerW',
+          windowTitle: '',
+          isOwnProcess: false,
+          isDevBypass: false,
+        );
+        expect(eval.isAllowed, isTrue);
+      });
+    });
+
+    // -------------------------------------------------------------
+    // EXPLOIT 2: Essay Mode Whitelist (Word, PPT) vs Blacklist (Excel, Chrome, Edge)
+    // -------------------------------------------------------------
+    group('Exploit 2: Essay Mode Whitelist vs Blacklist (PowerPoint vs Excel)', () {
+      test('Microsoft Word (winword.exe) is ALLOWED in Essay Mode', () {
+        final eval = service.evaluateWindowPolicy(
+          mode: AssessmentMode.essayExam,
+          processExe: 'winword.exe',
+          className: 'OpusApp',
+          windowTitle: 'Document1 - Microsoft Word',
+          isOwnProcess: false,
+          isDevBypass: false,
+        );
+        expect(eval.isAllowed, isTrue);
+      });
+
+      test('Microsoft PowerPoint (powerpnt.exe) is ALLOWED in Essay Mode', () {
+        final eval = service.evaluateWindowPolicy(
+          mode: AssessmentMode.essayExam,
+          processExe: 'powerpnt.exe',
+          className: 'PPTFrameClass',
+          windowTitle: 'Presentation1 - Microsoft PowerPoint',
+          isOwnProcess: false,
+          isDevBypass: false,
+        );
+        expect(eval.isAllowed, isTrue);
+      });
+
+      test('Microsoft Excel (excel.exe) MUST BE BLOCKED in Essay Mode', () {
+        final eval = service.evaluateWindowPolicy(
+          mode: AssessmentMode.essayExam,
+          processExe: 'excel.exe',
+          className: 'XLMAIN',
+          windowTitle: 'Book1 - Microsoft Excel',
+          isOwnProcess: false,
+          isDevBypass: false,
+        );
+        expect(eval.isBlocked, isTrue);
+        expect(eval.reason, contains('hanya Microsoft Word dan PowerPoint yang diizinkan'));
+      });
+
+      test('Google Chrome (chrome.exe) MUST BE BLOCKED in Essay Mode', () {
+        final eval = service.evaluateWindowPolicy(
+          mode: AssessmentMode.essayExam,
+          processExe: 'chrome.exe',
+          className: 'Chrome_WidgetWin_1',
+          windowTitle: 'Google - Google Chrome',
+          isOwnProcess: false,
+          isDevBypass: false,
+        );
+        expect(eval.isBlocked, isTrue);
+      });
+
+      test('Microsoft Edge (msedge.exe) MUST BE BLOCKED in Essay Mode', () {
+        final eval = service.evaluateWindowPolicy(
+          mode: AssessmentMode.essayExam,
+          processExe: 'msedge.exe',
+          className: 'Chrome_WidgetWin_1',
+          windowTitle: 'New Tab - Microsoft Edge',
+          isOwnProcess: false,
+          isDevBypass: false,
+        );
+        expect(eval.isBlocked, isTrue);
+      });
+    });
+
+    // -------------------------------------------------------------
+    // EXPLOIT 3: UWP Windows Settings & Calculator Container
+    // -------------------------------------------------------------
+    group('Exploit 3: UWP Windows Settings (ApplicationFrameHost)', () {
+      test('Windows Settings / UWP container (ApplicationFrameHost.exe) MUST BE BLOCKED', () {
+        final eval = service.evaluateWindowPolicy(
+          mode: AssessmentMode.essayExam,
+          processExe: 'applicationframehost.exe',
+          className: 'ApplicationFrameWindow',
+          windowTitle: 'Settings',
+          isOwnProcess: false,
+          isDevBypass: false,
+        );
+        expect(eval.isBlocked, isTrue);
+      });
+
+      test('SystemSettings.exe MUST BE BLOCKED in Essay Mode', () {
+        final eval = service.evaluateWindowPolicy(
+          mode: AssessmentMode.essayExam,
+          processExe: 'systemsettings.exe',
+          className: 'Windows.UI.Core.CoreWindow',
+          windowTitle: 'Settings',
+          isOwnProcess: false,
+          isDevBypass: false,
+        );
+        expect(eval.isBlocked, isTrue);
+      });
+    });
+
+    // -------------------------------------------------------------
+    // EXPLOIT 4 & 5: File Explorer & Run Dialog under explorer.exe
+    // -------------------------------------------------------------
+    group('Exploit 4 & 5: File Explorer & Run Dialog under explorer.exe', () {
+      test('Taskbar (Shell_TrayWnd) under explorer.exe is ALLOWED', () {
+        final eval = service.evaluateWindowPolicy(
+          mode: AssessmentMode.essayExam,
+          processExe: 'explorer.exe',
+          className: 'Shell_TrayWnd',
+          windowTitle: '',
+          isOwnProcess: false,
+          isDevBypass: false,
+        );
+        expect(eval.isAllowed, isTrue);
+      });
+
+      test('File Explorer folder (CabinetWClass) under explorer.exe MUST BE BLOCKED', () {
+        final eval = service.evaluateWindowPolicy(
+          mode: AssessmentMode.essayExam,
+          processExe: 'explorer.exe',
+          className: 'CabinetWClass',
+          windowTitle: 'This PC',
+          isOwnProcess: false,
+          isDevBypass: false,
+        );
+        expect(eval.isBlocked, isTrue);
+        expect(eval.reason, contains('File Explorer diblokir'));
+      });
+
+      test('File Explorer legacy folder (ExploreWClass) under explorer.exe MUST BE BLOCKED', () {
+        final eval = service.evaluateWindowPolicy(
+          mode: AssessmentMode.essayExam,
+          processExe: 'explorer.exe',
+          className: 'ExploreWClass',
+          windowTitle: 'Documents',
+          isOwnProcess: false,
+          isDevBypass: false,
+        );
+        expect(eval.isBlocked, isTrue);
+        expect(eval.reason, contains('File Explorer diblokir'));
+      });
+
+      test('Run dialog (#32770) under explorer.exe MUST BE BLOCKED', () {
+        final eval = service.evaluateWindowPolicy(
+          mode: AssessmentMode.essayExam,
+          processExe: 'explorer.exe',
+          className: '#32770',
+          windowTitle: 'Run',
+          isOwnProcess: false,
+          isDevBypass: false,
+        );
+        expect(eval.isBlocked, isTrue);
+        expect(eval.reason, contains('Kotak dialog Run diblokir'));
+      });
+    });
+
+    // -------------------------------------------------------------
+    // STRICT EXAM MODE & GENERAL BEHAVIOR
+    // -------------------------------------------------------------
+    group('Strict Exam Mode & Own Process', () {
+      test('Own Process is always ALLOWED in any mode', () {
+        final eval = service.evaluateWindowPolicy(
+          mode: AssessmentMode.strictExam,
+          processExe: 'ara_desktop.exe',
+          className: 'FLUTTER_RUNNER_WIN32_WINDOW',
+          windowTitle: 'ARA Assessment',
+          isOwnProcess: true,
+          isDevBypass: false,
+        );
+        expect(eval.isAllowed, isTrue);
+      });
+
+      test('Strict Mode BLOCKS Word and PowerPoint as well', () {
+        final evalWord = service.evaluateWindowPolicy(
+          mode: AssessmentMode.strictExam,
+          processExe: 'winword.exe',
+          className: 'OpusApp',
+          windowTitle: 'Document1',
+          isOwnProcess: false,
+          isDevBypass: false,
+        );
+        expect(evalWord.isBlocked, isTrue);
+
+        final evalPpt = service.evaluateWindowPolicy(
+          mode: AssessmentMode.strictExam,
+          processExe: 'powerpnt.exe',
+          className: 'PPTFrameClass',
+          windowTitle: 'Presentation1',
+          isOwnProcess: false,
+          isDevBypass: false,
+        );
+        expect(evalPpt.isBlocked, isTrue);
+      });
+
+      test('Normal Mode ALLOWS all applications', () {
+        final eval = service.evaluateWindowPolicy(
+          mode: AssessmentMode.normal,
+          processExe: 'excel.exe',
+          className: 'XLMAIN',
+          windowTitle: 'Book1',
+          isOwnProcess: false,
+          isDevBypass: false,
+        );
+        expect(eval.isAllowed, isTrue);
+      });
+    });
+  });
+}
