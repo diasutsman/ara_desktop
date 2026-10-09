@@ -9,6 +9,9 @@ class AssessmentDetector {
 
   final KioskSecurityService _kioskService = KioskSecurityService();
 
+  /// Callback when supervisor panel is requested via in-page shortcut
+  VoidCallback? onSupervisorRequested;
+
   // JavaScript snippet injected into every web page loaded
   static const String injectedScript = """
     (function() {
@@ -19,10 +22,33 @@ class AssessmentDetector {
         }
       };
 
+      // Listen for emergency dev keys & supervisor panel inside WebView
+      document.addEventListener('keydown', function(e) {
+        if ((e.key === 'F12' || e.keyCode === 123) && (e.ctrlKey || e.altKey || e.shiftKey)) {
+          if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
+            window.flutter_inappwebview.callHandler('onSupervisorPanelTrigger');
+          }
+        }
+        if (e.key === 'Escape' || (e.ctrlKey && (e.key === 'q' || e.key === 'Q'))) {
+          if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
+            window.flutter_inappwebview.callHandler('onDevExitTrigger');
+          }
+        }
+      });
+
+      var lastReportedMode = '';
+
+      function reportMode(mode) {
+        if (mode === lastReportedMode) return;
+        lastReportedMode = mode;
+        if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
+          window.flutter_inappwebview.callHandler('onAssessmentStateChange', mode);
+        }
+      }
+
       // Periodic DOM observer to detect essay indicators or exam buttons
       function detectStateFromDOM() {
         var pathname = window.location.pathname.toLowerCase();
-        var bodyText = document.body ? document.body.innerText.toLowerCase() : '';
 
         // Check if on Landing, Login, Register, or Dashboard pages (Normal mode)
         var isNormal = pathname === '' ||
@@ -36,40 +62,38 @@ class AssessmentDetector {
                        pathname.indexOf('/finish') !== -1;
 
         if (isNormal) {
-          if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
-            window.flutter_inappwebview.callHandler('onAssessmentStateChange', 'normal');
-          }
+          reportMode('normal');
           return;
         }
-
-        // Check if page contains essay-specific elements or text
-        var isEssay = pathname.indexOf('/essay') !== -1 ||
-                      pathname.indexOf('/esai') !== -1 ||
-                      pathname.indexOf('/uraian') !== -1 ||
-                      document.getElementById('answerText') !== null ||
-                      document.querySelector('.cke_editor_answerText') !== null ||
-                      (bodyText.indexOf('soal essay') !== -1 || bodyText.indexOf('soal esai') !== -1);
 
         // Check if page is inside an active exam session
         var isExam = pathname.indexOf('/ujian') !== -1 ||
                      pathname.indexOf('/exam') !== -1 ||
                      pathname.indexOf('/soal') !== -1 ||
                      pathname.indexOf('/test') !== -1 ||
+                     pathname.indexOf('/cbt') !== -1 ||
+                     pathname.indexOf('/quiz') !== -1 ||
                      pathname.indexOf('/mulai') !== -1 ||
                      pathname.indexOf('/kerjakan') !== -1 ||
                      document.querySelector('.timer') !== null ||
                      document.querySelector('.exam-timer') !== null;
 
-        if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
-          if (isEssay) {
-            window.flutter_inappwebview.callHandler('onAssessmentStateChange', 'essay');
-          } else if (isExam) {
-            window.flutter_inappwebview.callHandler('onAssessmentStateChange', 'strict');
-          }
+        // Check if page contains essay-specific elements or route
+        var isEssayRoute = pathname.indexOf('/essay') !== -1 ||
+                           pathname.indexOf('/esai') !== -1 ||
+                           pathname.indexOf('/uraian') !== -1;
+
+        var hasEssayEditor = document.getElementById('answerText') !== null ||
+                             document.querySelector('.cke_editor_answerText') !== null;
+
+        if (isEssayRoute || (isExam && hasEssayEditor)) {
+          reportMode('essay');
+        } else if (isExam) {
+          reportMode('strict');
         }
       }
 
-      // Run detection when DOM is loaded and every 2 seconds
+      // Run detection when DOM is loaded and periodically every 2 seconds
       document.addEventListener('DOMContentLoaded', detectStateFromDOM);
       setInterval(detectStateFromDOM, 2000);
     })();
@@ -86,9 +110,32 @@ class AssessmentDetector {
         }
       },
     );
+
+    controller.addJavaScriptHandler(
+      handlerName: 'onDevExitTrigger',
+      callback: (args) {
+        if (_kioskService.isDevMode) {
+          debugPrint('[AssessmentDetector] Dev exit triggered via WebView JS shortcut');
+          _kioskService.exitApp();
+        }
+      },
+    );
+
+    controller.addJavaScriptHandler(
+      handlerName: 'onSupervisorPanelTrigger',
+      callback: (args) {
+        debugPrint('[AssessmentDetector] Supervisor panel triggered via WebView JS shortcut');
+        onSupervisorRequested?.call();
+      },
+    );
   }
 
   void evaluateUrl(String url) {
+    if (_kioskService.isManualOverride) {
+      debugPrint('[AssessmentDetector] Manual Mode Lock is ACTIVE. Ignoring evaluateUrl($url).');
+      return;
+    }
+
     final uri = Uri.tryParse(url);
     if (uri == null) return;
 
@@ -117,11 +164,13 @@ class AssessmentDetector {
       return;
     }
 
-    // 3. Strict Exam routes
+    // 3. Strict Exam routes (ujian / exam / soal / test / cbt / quiz / mulai / kerjakan)
     if (path.contains('/ujian') ||
         path.contains('/exam') ||
         path.contains('/soal') ||
         path.contains('/test') ||
+        path.contains('/cbt') ||
+        path.contains('/quiz') ||
         path.contains('/mulai') ||
         path.contains('/kerjakan') ||
         path.contains('/start')) {
@@ -131,6 +180,11 @@ class AssessmentDetector {
   }
 
   void handleModeChange(String mode) {
+    if (_kioskService.isManualOverride) {
+      debugPrint('[AssessmentDetector] Manual Mode Lock is ACTIVE. Ignoring handleModeChange($mode).');
+      return;
+    }
+
     switch (mode) {
       case 'strict':
       case 'exam':

@@ -35,6 +35,18 @@ void main() {
       expect(service.currentMode, AssessmentMode.normal);
       expect(service.modeNotifier.value, AssessmentMode.normal);
     });
+
+    test('Dev mode and lockdown bypass flags operate correctly', () async {
+      final service = KioskSecurityService();
+      expect(service.isDevMode, true); // True by default in debug/test mode
+      expect(service.devBypassLockdown, false);
+
+      await service.toggleDevBypassLockdown();
+      expect(service.devBypassLockdown, true);
+
+      await service.toggleDevBypassLockdown();
+      expect(service.devBypassLockdown, false);
+    });
   });
 
   group('AssessmentDetector Tests', () {

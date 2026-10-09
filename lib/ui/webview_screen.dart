@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:window_manager/window_manager.dart';
 import '../services/assessment_detector.dart';
 import '../services/kiosk_security_service.dart';
 
@@ -14,7 +15,7 @@ class WebViewScreen extends StatefulWidget {
   State<WebViewScreen> createState() => _WebViewScreenState();
 }
 
-class _WebViewScreenState extends State<WebViewScreen> {
+class _WebViewScreenState extends State<WebViewScreen> with WindowListener {
   InAppWebViewController? _webViewController;
   final KioskSecurityService _kioskService = KioskSecurityService();
   final AssessmentDetector _detector = AssessmentDetector();
@@ -25,17 +26,60 @@ class _WebViewScreenState extends State<WebViewScreen> {
   String _errorMessage = '';
 
   final FocusNode _keyboardFocusNode = FocusNode();
+  bool _isSupervisorDialogOpen = false;
 
   @override
   void initState() {
     super.initState();
     _requestInitialPermissions();
+    _detector.onSupervisorRequested = _showSupervisorDialog;
+    HardwareKeyboard.instance.addHandler(_handleGlobalKeyEvent);
+    if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      windowManager.addListener(this);
+    }
   }
 
   @override
   void dispose() {
+    if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      windowManager.removeListener(this);
+    }
+    HardwareKeyboard.instance.removeHandler(_handleGlobalKeyEvent);
+    _detector.onSupervisorRequested = null;
     _keyboardFocusNode.dispose();
     super.dispose();
+  }
+
+  @override
+  void onWindowMaximize() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void onWindowUnmaximize() {
+    if (mounted) setState(() {});
+  }
+
+  bool _handleGlobalKeyEvent(KeyEvent event) {
+    if (event is KeyDownEvent) {
+      // Dev exit hotkeys: Escape or Ctrl+Q
+      if (_kioskService.isDevMode) {
+        if (event.logicalKey == LogicalKeyboardKey.escape ||
+            (HardwareKeyboard.instance.isControlPressed && event.logicalKey == LogicalKeyboardKey.keyQ)) {
+          _kioskService.exitApp();
+          return true;
+        }
+      }
+      // Supervisor dialog hotkeys: Ctrl+Shift+F12, Alt+F12, or F12 in dev mode
+      if (event.logicalKey == LogicalKeyboardKey.f12 &&
+          (HardwareKeyboard.instance.isControlPressed ||
+           HardwareKeyboard.instance.isAltPressed ||
+           _kioskService.isDevMode)) {
+        _showSupervisorDialog();
+        return true;
+      }
+    }
+    return false;
   }
 
   Future<void> _requestInitialPermissions() async {
@@ -51,109 +95,206 @@ class _WebViewScreenState extends State<WebViewScreen> {
   }
 
   void _showSupervisorDialog() {
+    if (!mounted || _isSupervisorDialogOpen) return;
+    _isSupervisorDialogOpen = true;
+
     showDialog(
       context: context,
       builder: (ctx) {
-        return AlertDialog(
-          backgroundColor: const Color(0xFF1E1E2E),
-          title: const Row(
-            children: [
-              Icon(Icons.shield_outlined, color: Colors.amber),
-              SizedBox(width: 8),
-              Text(
-                'Panel Pengawas / Debugger',
-                style: TextStyle(color: Colors.white, fontSize: 18),
-              ),
-            ],
-          ),
-          content: ValueListenableBuilder<AssessmentMode>(
-            valueListenable: _kioskService.modeNotifier,
-            builder: (context, currentMode, _) {
-              return Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              backgroundColor: const Color(0xFF1E1E2E),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              title: const Row(
                 children: [
+                  Icon(Icons.shield_outlined, color: Colors.amber),
+                  SizedBox(width: 8),
                   Text(
-                    'Status Mode Saat Ini: ${currentMode.name.toUpperCase()}',
-                    style: TextStyle(
-                      color: currentMode == AssessmentMode.strictExam
-                          ? Colors.redAccent
-                          : currentMode == AssessmentMode.essayExam
-                              ? Colors.orangeAccent
-                              : Colors.greenAccent,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  const Text(
-                    'Ubah Mode Keamanan Secara Manual:',
-                    style: TextStyle(color: Colors.white70, fontSize: 13),
-                  ),
-                  const SizedBox(height: 8),
-                  ListTile(
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                    tileColor: currentMode == AssessmentMode.normal
-                        ? Colors.white12
-                        : Colors.transparent,
-                    leading: const Icon(Icons.lock_open, color: Colors.greenAccent),
-                    title: const Text('Normal (Bebas / Tanpa Kiosk)',
-                        style: TextStyle(color: Colors.white, fontSize: 14)),
-                    onTap: () {
-                      _kioskService.setMode(AssessmentMode.normal);
-                      Navigator.pop(ctx);
-                    },
-                  ),
-                  ListTile(
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                    tileColor: currentMode == AssessmentMode.strictExam
-                        ? Colors.white12
-                        : Colors.transparent,
-                    leading: const Icon(Icons.lock, color: Colors.redAccent),
-                    title: const Text('Strict Exam (Hanya ARA)',
-                        style: TextStyle(color: Colors.white, fontSize: 14)),
-                    subtitle: const Text('Blokir semua aplikasi lain',
-                        style: TextStyle(color: Colors.white54, fontSize: 12)),
-                    onTap: () {
-                      _kioskService.setMode(AssessmentMode.strictExam);
-                      Navigator.pop(ctx);
-                    },
-                  ),
-                  ListTile(
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                    tileColor: currentMode == AssessmentMode.essayExam
-                        ? Colors.white12
-                        : Colors.transparent,
-                    leading: const Icon(Icons.edit_note, color: Colors.orangeAccent),
-                    title: const Text('Essay Exam (Word & PPT Saja)',
-                        style: TextStyle(color: Colors.white, fontSize: 14)),
-                    subtitle: const Text('Bolehkan Word & PowerPoint',
-                        style: TextStyle(color: Colors.white54, fontSize: 12)),
-                    onTap: () {
-                      _kioskService.setMode(AssessmentMode.essayExam);
-                      Navigator.pop(ctx);
-                    },
+                    'Panel Pengawas / Debugger',
+                    style: TextStyle(color: Colors.white, fontSize: 18),
                   ),
                 ],
-              );
-            },
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                _webViewController?.reload();
-                Navigator.pop(ctx);
-              },
-              child: const Text('Reload Web', style: TextStyle(color: Colors.blueAccent)),
-            ),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF605CA8)),
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Tutup', style: TextStyle(color: Colors.white)),
-            ),
-          ],
+              ),
+              content: SingleChildScrollView(
+                child: AnimatedBuilder(
+                  animation: Listenable.merge([_kioskService.modeNotifier, _kioskService.manualOverrideNotifier]),
+                  builder: (context, _) {
+                    final currentMode = _kioskService.currentMode;
+                    final isManual = _kioskService.isManualOverride;
+
+                    return Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Text(
+                              'Mode: ${currentMode.name.toUpperCase()}',
+                              style: TextStyle(
+                                color: currentMode == AssessmentMode.strictExam
+                                    ? Colors.redAccent
+                                    : currentMode == AssessmentMode.essayExam
+                                        ? Colors.orangeAccent
+                                        : Colors.greenAccent,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 15,
+                              ),
+                            ),
+                            const Spacer(),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: isManual ? Colors.amber.shade900 : Colors.green.shade900,
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                isManual ? 'TERKUNCI MANUAL' : 'OTOMATIS (WEB)',
+                                style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+                        const Text(
+                          'Pilih Mode (Kunci Manual):',
+                          style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600),
+                        ),
+                        const SizedBox(height: 8),
+                        ListTile(
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          tileColor: (!isManual)
+                              ? Colors.blue.withValues(alpha: 0.15)
+                              : Colors.transparent,
+                          leading: const Icon(Icons.autorenew, color: Colors.blueAccent),
+                          title: const Text('Mode Otomatis (Ikuti Portal Web)',
+                              style: TextStyle(color: Colors.white, fontSize: 14)),
+                          subtitle: const Text('Lepas kunci manual, ikuti URL / DOM halaman',
+                              style: TextStyle(color: Colors.white54, fontSize: 11)),
+                          onTap: () async {
+                            _kioskService.clearManualOverride();
+                            final currentUrl = await _webViewController?.getUrl();
+                            if (currentUrl != null) {
+                              _detector.evaluateUrl(currentUrl.toString());
+                            }
+                            if (ctx.mounted) Navigator.pop(ctx);
+                          },
+                        ),
+                        const SizedBox(height: 4),
+                        ListTile(
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          tileColor: (isManual && currentMode == AssessmentMode.normal)
+                              ? Colors.white12
+                              : Colors.transparent,
+                          leading: const Icon(Icons.lock_open, color: Colors.greenAccent),
+                          title: const Text('Kunci: Normal (Bebas / Tanpa Kiosk)',
+                              style: TextStyle(color: Colors.white, fontSize: 14)),
+                          onTap: () async {
+                            await _kioskService.setManualMode(AssessmentMode.normal);
+                            if (ctx.mounted) Navigator.pop(ctx);
+                          },
+                        ),
+                        const SizedBox(height: 4),
+                        ListTile(
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          tileColor: (isManual && currentMode == AssessmentMode.strictExam)
+                              ? Colors.white12
+                              : Colors.transparent,
+                          leading: const Icon(Icons.lock, color: Colors.redAccent),
+                          title: const Text('Kunci: Strict Exam (Hanya ARA)',
+                              style: TextStyle(color: Colors.white, fontSize: 14)),
+                          subtitle: const Text('Blokir Alt+Tab, WinKey, & semua aplikasi lain',
+                              style: TextStyle(color: Colors.white54, fontSize: 11)),
+                          onTap: () async {
+                            await _kioskService.setManualMode(AssessmentMode.strictExam);
+                            if (ctx.mounted) Navigator.pop(ctx);
+                          },
+                        ),
+                        const SizedBox(height: 4),
+                        ListTile(
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          tileColor: (isManual && currentMode == AssessmentMode.essayExam)
+                              ? Colors.white12
+                              : Colors.transparent,
+                          leading: const Icon(Icons.edit_note, color: Colors.orangeAccent),
+                          title: const Text('Kunci: Essay Exam (Word & PPT Saja)',
+                              style: TextStyle(color: Colors.white, fontSize: 14)),
+                          subtitle: const Text('Bolehkan Word & PowerPoint',
+                              style: TextStyle(color: Colors.white54, fontSize: 11)),
+                          onTap: () async {
+                            await _kioskService.setManualMode(AssessmentMode.essayExam);
+                            if (ctx.mounted) Navigator.pop(ctx);
+                          },
+                        ),
+                        const Divider(color: Colors.white24, height: 24),
+                        const Text(
+                          'Opsi Pengembang (Development):',
+                          style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold),
+                        ),
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('Development Mode', style: TextStyle(color: Colors.white, fontSize: 13)),
+                          subtitle: const Text('Bolehkan Task Manager, IDE, & Alt+F4',
+                              style: TextStyle(color: Colors.white54, fontSize: 11)),
+                          value: _kioskService.isDevMode,
+                          activeThumbColor: Colors.amber,
+                          onChanged: (val) {
+                            setDialogState(() {
+                              setState(() {
+                                _kioskService.isDevMode = val;
+                              });
+                            });
+                          },
+                        ),
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('Bypass Lockdown Window', style: TextStyle(color: Colors.white, fontSize: 13)),
+                          subtitle: const Text('Nonaktifkan fullscreen & always-on-top',
+                              style: TextStyle(color: Colors.white54, fontSize: 11)),
+                          value: _kioskService.devBypassLockdown,
+                          activeThumbColor: Colors.amber,
+                          onChanged: (val) async {
+                            await _kioskService.toggleDevBypassLockdown();
+                            setDialogState(() {
+                              setState(() {});
+                            });
+                          },
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ),
+              actions: [
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade800),
+                  icon: const Icon(Icons.power_settings_new, color: Colors.white, size: 16),
+                  label: const Text('Keluar Aplikasi', style: TextStyle(color: Colors.white)),
+                  onPressed: () async {
+                    Navigator.pop(ctx);
+                    await _kioskService.exitApp();
+                  },
+                ),
+                TextButton(
+                  onPressed: () {
+                    _webViewController?.reload();
+                    Navigator.pop(ctx);
+                  },
+                  child: const Text('Reload Web', style: TextStyle(color: Colors.blueAccent)),
+                ),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF605CA8)),
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Tutup', style: TextStyle(color: Colors.white)),
+                ),
+              ],
+            );
+          },
         );
       },
-    );
+    ).then((_) {
+      _isSupervisorDialogOpen = false;
+    });
   }
 
   @override
@@ -346,53 +487,139 @@ class _WebViewScreenState extends State<WebViewScreen> {
               ),
             ),
 
-            // Discreet Active Mode Badge (Top-Right)
+            // Discreet Active Mode Badge or Window Controls (Top-Right)
             Positioned(
               top: 8,
               right: 8,
               child: ValueListenableBuilder<AssessmentMode>(
                 valueListenable: _kioskService.modeNotifier,
                 builder: (context, mode, _) {
-                  if (mode == AssessmentMode.normal) return const SizedBox.shrink();
-                  final isStrict = mode == AssessmentMode.strictExam;
-                  return GestureDetector(
-                    onDoubleTap: _showSupervisorDialog,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                      decoration: BoxDecoration(
-                        color: (isStrict ? Colors.red.shade900 : Colors.amber.shade900)
-                            .withValues(alpha: 0.85),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: isStrict ? Colors.redAccent : Colors.amberAccent,
-                          width: 1,
+                  if (mode != AssessmentMode.normal) {
+                    final isStrict = mode == AssessmentMode.strictExam;
+                    return GestureDetector(
+                      onDoubleTap: _showSupervisorDialog,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: (isStrict ? Colors.red.shade900 : Colors.amber.shade900)
+                              .withValues(alpha: 0.85),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: isStrict ? Colors.redAccent : Colors.amberAccent,
+                            width: 1,
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              isStrict ? Icons.lock : Icons.edit_note,
+                              size: 14,
+                              color: Colors.white,
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              isStrict ? 'LOCKDOWN AKTIF' : 'MODE ESSAY (WORD & PPT)',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 0.5,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            isStrict ? Icons.lock : Icons.edit_note,
-                            size: 14,
-                            color: Colors.white,
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            isStrict ? 'LOCKDOWN AKTIF' : 'MODE ESSAY (WORD & PPT)',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 10,
-                              fontWeight: FontWeight.bold,
-                              letterSpacing: 0.5,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
+                    );
+                  }
+
+                  // Normal Mode: Gunakan kontrol jendela native bawaan Windows (minimize, maximize, close).
+                  // Tidak menampilkan tombol ganda di dalam webview.
+                  return const SizedBox.shrink();
                 },
               ),
             ),
+
+            // Floating Dev Mode Toolbar & Emergency Exit Button (Top-Left)
+            if (_kioskService.isDevMode)
+              Positioned(
+                top: 8,
+                left: 8,
+                child: Material(
+                  color: Colors.transparent,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1E1E2E).withValues(alpha: 0.95),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.amberAccent.shade400, width: 1.5),
+                      boxShadow: const [
+                        BoxShadow(color: Colors.black54, blurRadius: 8, offset: Offset(0, 3)),
+                      ],
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.amber.shade800,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: const Row(
+                            children: [
+                              Icon(Icons.developer_mode, size: 12, color: Colors.white),
+                              SizedBox(width: 4),
+                              Text(
+                                'DEV MODE',
+                                style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        // Quick supervisor dialog
+                        InkWell(
+                          onTap: _showSupervisorDialog,
+                          borderRadius: BorderRadius.circular(4),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: Colors.white12,
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: const Row(
+                              children: [
+                                Icon(Icons.settings, size: 12, color: Colors.white70),
+                                SizedBox(width: 4),
+                                Text('Panel (F12)', style: TextStyle(color: Colors.white, fontSize: 11)),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        // Emergency Exit Button (Always available in dev mode)
+                        ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.red.shade700,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                            minimumSize: Size.zero,
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            elevation: 2,
+                          ),
+                          icon: const Icon(Icons.power_settings_new, size: 14),
+                          label: const Text(
+                            'KELUAR (Esc / Alt+F4)',
+                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                          ),
+                          onPressed: () => _kioskService.exitApp(),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
           ],
         ),
       ),

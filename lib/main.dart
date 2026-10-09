@@ -20,13 +20,9 @@ void main() async {
       backgroundColor: Colors.white,
       skipTaskbar: false,
       title: 'ARA Assessment',
-      titleBarStyle: TitleBarStyle.normal, // Standard window title bar with close (silang) button
     );
 
     await windowManager.waitUntilReadyToShow(windowOptions, () async {
-      await windowManager.setFullScreen(false);
-      await windowManager.setAlwaysOnTop(false);
-      await windowManager.setPreventClose(false);
       await windowManager.show();
       await windowManager.focus();
     });

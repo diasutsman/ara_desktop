@@ -3,6 +3,7 @@
 #include <optional>
 
 #include "flutter/generated_plugin_registrant.h"
+#include "kiosk_hook.h"
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -25,6 +26,7 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+  RegisterKioskHookChannel(flutter_controller_->engine()->messenger());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
@@ -40,6 +42,8 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  CleanupKioskHook();
+
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }
@@ -51,6 +55,48 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  // If Kiosk Lockdown is active, block toolbar double-click, minimize, restore, resize, drag, and close!
+  if (IsKioskWindowLocked()) {
+    switch (message) {
+      // 1. Block double-clicking anywhere on the top toolbar / title bar / caption / borders
+      case WM_NCLBUTTONDBLCLK:
+        return 0;
+
+      // 2. Block system commands: Minimize, Restore (unmaximize), Maximize, Move/Drag, Resize, Close, System Menu
+      case WM_SYSCOMMAND: {
+        WPARAM sysCmd = (wparam & 0xFFF0);
+        if (sysCmd == SC_MINIMIZE ||
+            sysCmd == SC_RESTORE ||
+            sysCmd == SC_MAXIMIZE ||
+            sysCmd == SC_MOVE ||
+            sysCmd == SC_SIZE ||
+            sysCmd == SC_CLOSE ||
+            sysCmd == SC_KEYMENU) {
+          return 0; // Deny system command completely
+        }
+        break;
+      }
+
+      // 3. Block clicking on caption buttons (minimize, maximize, close) or dragging the caption
+      case WM_NCLBUTTONDOWN:
+        if (wparam == HTCAPTION ||
+            wparam == HTMINBUTTON ||
+            wparam == HTMAXBUTTON ||
+            wparam == HTCLOSE) {
+          return 0;
+        }
+        break;
+
+      // 4. Block right-click context menu on title bar
+      case WM_NCRBUTTONDOWN:
+      case WM_NCRBUTTONUP:
+        if (wparam == HTCAPTION) {
+          return 0;
+        }
+        break;
+    }
+  }
+
   // Give Flutter, including plugins, an opportunity to handle window messages.
   if (flutter_controller_) {
     std::optional<LRESULT> result =
