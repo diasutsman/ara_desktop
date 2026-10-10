@@ -1,3 +1,4 @@
+import 'dart:ui';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ara_desktop/services/kiosk_security_service.dart';
 
@@ -300,6 +301,52 @@ void main() {
           isDevBypass: false,
         );
         expect(eval.isAllowed, isTrue);
+      });
+    });
+
+    // -------------------------------------------------------------
+    // MOBILE KIOSK & OFFICE SESSION TESTS
+    // -------------------------------------------------------------
+    group('Mobile Kiosk Lifecycle & Office Session', () {
+      test('Leaving app during exam without Office session records a security violation', () {
+        service.currentMode = AssessmentMode.exam;
+        service.violationCount = 0;
+        service.securityAlertNotifier.value = null;
+        service.isOfficeSessionActive = false;
+
+        service.handleAppLifecycleChange(AppLifecycleState.paused);
+
+        expect(service.violationCount, equals(1));
+        expect(service.securityAlertNotifier.value, contains('PERINGATAN: Anda terdeteksi meninggalkan aplikasi ARA Assessment'));
+      });
+
+      test('Leaving app during exam with an active Office session is PERMITTED (no violation)', () {
+        service.currentMode = AssessmentMode.exam;
+        service.violationCount = 0;
+        service.securityAlertNotifier.value = null;
+
+        service.markOfficeSessionStarted();
+        expect(service.isOfficeSessionActive, isTrue);
+
+        service.handleAppLifecycleChange(AppLifecycleState.paused);
+
+        expect(service.violationCount, equals(0));
+        expect(service.securityAlertNotifier.value, isNull);
+
+        // Returning to app clears the office session
+        service.handleAppLifecycleChange(AppLifecycleState.resumed);
+        expect(service.isOfficeSessionActive, isFalse);
+      });
+
+      test('Leaving app in Normal mode records no violation', () {
+        service.currentMode = AssessmentMode.normal;
+        service.violationCount = 0;
+        service.securityAlertNotifier.value = null;
+
+        service.handleAppLifecycleChange(AppLifecycleState.paused);
+
+        expect(service.violationCount, equals(0));
+        expect(service.securityAlertNotifier.value, isNull);
       });
     });
   });

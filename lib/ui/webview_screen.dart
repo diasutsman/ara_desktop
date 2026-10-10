@@ -7,6 +7,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:window_manager/window_manager.dart';
 import '../services/assessment_detector.dart';
 import '../services/kiosk_security_service.dart';
+import '../services/office_launcher_service.dart';
 
 class WebViewScreen extends StatefulWidget {
   const WebViewScreen({super.key});
@@ -15,7 +16,7 @@ class WebViewScreen extends StatefulWidget {
   State<WebViewScreen> createState() => _WebViewScreenState();
 }
 
-class _WebViewScreenState extends State<WebViewScreen> with WindowListener {
+class _WebViewScreenState extends State<WebViewScreen> with WindowListener, WidgetsBindingObserver {
   InAppWebViewController? _webViewController;
   final KioskSecurityService _kioskService = KioskSecurityService();
   final AssessmentDetector _detector = AssessmentDetector();
@@ -28,9 +29,12 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener {
   final FocusNode _keyboardFocusNode = FocusNode();
   bool _isSupervisorDialogOpen = false;
 
+  bool get _isMobile => !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _requestInitialPermissions();
     _detector.onSupervisorRequested = _showSupervisorDialog;
     HardwareKeyboard.instance.addHandler(_handleGlobalKeyEvent);
@@ -41,6 +45,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       windowManager.removeListener(this);
     }
@@ -48,6 +53,12 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener {
     _detector.onSupervisorRequested = null;
     _keyboardFocusNode.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    _kioskService.handleAppLifecycleChange(state);
   }
 
   @override
@@ -281,20 +292,46 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: KeyboardListener(
-        focusNode: _keyboardFocusNode,
-        autofocus: true,
-        onKeyEvent: (event) {
-          // Shortcut Ctrl + Shift + F12 or Alt + F12 to trigger supervisor panel
-          if (event is KeyDownEvent &&
-              event.logicalKey == LogicalKeyboardKey.f12 &&
-              (HardwareKeyboard.instance.isControlPressed || HardwareKeyboard.instance.isAltPressed)) {
-            _showSupervisorDialog();
-          }
-        },
-        child: Stack(
+    return ValueListenableBuilder<AssessmentMode>(
+      valueListenable: _kioskService.modeNotifier,
+      builder: (context, currentMode, _) {
+        final isExam = currentMode != AssessmentMode.normal;
+        return PopScope(
+          canPop: !isExam,
+          onPopInvokedWithResult: (didPop, result) {
+            if (!didPop) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Tombol navigasi dinonaktifkan selama Mode Ujian.'),
+                  duration: Duration(seconds: 2),
+                  backgroundColor: Colors.red,
+                ),
+              );
+            }
+          },
+          child: Scaffold(
+            backgroundColor: const Color(0xFF2B2B2B),
+            body: SafeArea(
+              top: _isMobile,
+              bottom: false,
+              left: false,
+              right: false,
+              child: Column(
+                children: [
+                  if (_isMobile) _buildMobileTopBar(currentMode),
+                  Expanded(
+                    child: KeyboardListener(
+                      focusNode: _keyboardFocusNode,
+                      autofocus: !_isMobile,
+                      onKeyEvent: (event) {
+                        // Shortcut Ctrl + Shift + F12 or Alt + F12 to trigger supervisor panel
+                        if (event is KeyDownEvent &&
+                            event.logicalKey == LogicalKeyboardKey.f12 &&
+                            (HardwareKeyboard.instance.isControlPressed || HardwareKeyboard.instance.isAltPressed)) {
+                          _showSupervisorDialog();
+                        }
+                      },
+                      child: Stack(
           children: [
             // Main Webview
             InAppWebView(
@@ -312,6 +349,15 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener {
                 supportZoom: false,
                 isInspectable: kDebugMode,
                 transparentBackground: false,
+                mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
+                thirdPartyCookiesEnabled: true,
+                allowFileAccess: true,
+                allowContentAccess: true,
+                javaScriptCanOpenWindowsAutomatically: true,
+                cacheEnabled: true,
+                userAgent: _isMobile
+                    ? 'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36'
+                    : null,
               ),
               onWebViewCreated: (controller) {
                 _webViewController = controller;
@@ -363,7 +409,18 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener {
                   }
                 });
               },
+              onReceivedServerTrustAuthRequest: (controller, challenge) async {
+                debugPrint('[InAppWebView] SSL ServerTrustAuthRequest for: ${challenge.protectionSpace.host}');
+                return ServerTrustAuthResponse(action: ServerTrustAuthResponseAction.PROCEED);
+              },
+              onReceivedHttpError: (controller, request, errorResponse) {
+                debugPrint('[InAppWebView] HTTP Error ${errorResponse.statusCode}: ${errorResponse.reasonPhrase} on ${request.url}');
+              },
+              onConsoleMessage: (controller, consoleMessage) {
+                debugPrint('[InAppWebView Console] ${consoleMessage.messageLevel}: ${consoleMessage.message}');
+              },
               onReceivedError: (controller, request, error) {
+                debugPrint('[InAppWebView Error] Code: ${error.type}, Desc: ${error.description}');
                 setState(() {
                   _hasError = true;
                   _errorMessage = error.description;
@@ -372,7 +429,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener {
               },
             ),
 
-            // Top Linear Progress Bar when page loads
+            // Top Linear Progress Bar during in-page navigation
             if (_isLoading && _loadProgress < 1.0)
               Positioned(
                 top: 0,
@@ -382,7 +439,59 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener {
                   value: _loadProgress,
                   minHeight: 3,
                   backgroundColor: Colors.transparent,
-                  valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF605CA8)),
+                  valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF00AEF0)),
+                ),
+              ),
+
+            // Branded Loading Overlay (prevents blank white canvas while loading)
+            if (_isLoading && _loadProgress < 0.95)
+              Container(
+                color: const Color(0xFF2B2B2B),
+                alignment: Alignment.center,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(16),
+                      child: Image.asset(
+                        'assets/icon/app_icon.png',
+                        width: 72,
+                        height: 72,
+                        fit: BoxFit.contain,
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    const Text(
+                      'ARA Mobile',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      'Memuat portal asesmen...',
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontSize: 13,
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    SizedBox(
+                      width: 140,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(4),
+                        child: LinearProgressIndicator(
+                          value: _loadProgress > 0 ? _loadProgress : null,
+                          minHeight: 4,
+                          backgroundColor: Colors.white12,
+                          valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF00AEF0)),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
 
@@ -476,7 +585,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener {
               child: ValueListenableBuilder<AssessmentMode>(
                 valueListenable: _kioskService.modeNotifier,
                 builder: (context, mode, _) {
-                  if (mode != AssessmentMode.normal) {
+                  if (mode != AssessmentMode.normal && !_isMobile) {
                     return GestureDetector(
                       onDoubleTap: _showSupervisorDialog,
                       child: Container(
@@ -600,8 +709,193 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener {
                   ),
                 ),
               ),
-          ],
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
+      ),
+    );
+  },
+);
+  }
+
+  Widget _buildMobileTopBar(AssessmentMode currentMode) {
+    final isExam = currentMode != AssessmentMode.normal;
+    return Container(
+      height: 44,
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: const BoxDecoration(
+        color: Color(0xFF2B2B2B),
+        border: Border(
+          bottom: BorderSide(color: Color(0xFF1E1E1E), width: 1),
+        ),
+      ),
+      child: Row(
+        children: [
+          // Logo & Title
+          GestureDetector(
+            onDoubleTap: _showSupervisorDialog,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: Image.asset(
+                    'assets/icon/app_icon.png',
+                    width: 22,
+                    height: 22,
+                    fit: BoxFit.contain,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                const Text(
+                  'ARA Mobile',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0.3,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Spacer(),
+
+          // Utilities Dropdown Menu
+          Theme(
+            data: Theme.of(context).copyWith(
+              cardColor: const Color(0xFF2B2B2B),
+              popupMenuTheme: PopupMenuThemeData(
+                color: const Color(0xFF2B2B2B),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  side: const BorderSide(color: Colors.white24, width: 1),
+                ),
+              ),
+            ),
+            child: PopupMenuButton<String>(
+              tooltip: 'Utilities',
+              offset: const Offset(0, 40),
+              onSelected: (val) async {
+                _kioskService.markOfficeSessionStarted();
+                OfficeLaunchResult res;
+                if (val == 'word') {
+                  res = await OfficeLauncherService().launchWord();
+                } else if (val == 'excel') {
+                  res = await OfficeLauncherService().launchExcel();
+                } else {
+                  res = await OfficeLauncherService().launchPowerPoint();
+                }
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(res.message),
+                      backgroundColor: res.success
+                          ? Colors.green.shade800
+                          : (res.openedStore
+                              ? Colors.orange.shade800
+                              : Colors.red.shade800),
+                      duration: const Duration(seconds: 3),
+                    ),
+                  );
+                }
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: Colors.white12),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.apps_rounded, size: 14, color: Colors.white70),
+                    SizedBox(width: 6),
+                    Text(
+                      'Utilities',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    SizedBox(width: 2),
+                    Icon(Icons.arrow_drop_down, size: 16, color: Colors.white70),
+                  ],
+                ),
+              ),
+              itemBuilder: (ctx) => [
+                const PopupMenuItem(
+                  value: 'word',
+                  child: Row(
+                    children: [
+                      Icon(Icons.description, color: Color(0xFF2B579A), size: 18),
+                      SizedBox(width: 10),
+                      Text('Microsoft Word', style: TextStyle(color: Colors.white, fontSize: 13)),
+                    ],
+                  ),
+                ),
+                const PopupMenuItem(
+                  value: 'excel',
+                  child: Row(
+                    children: [
+                      Icon(Icons.table_chart, color: Color(0xFF217346), size: 18),
+                      SizedBox(width: 10),
+                      Text('Microsoft Excel', style: TextStyle(color: Colors.white, fontSize: 13)),
+                    ],
+                  ),
+                ),
+                const PopupMenuItem(
+                  value: 'powerpoint',
+                  child: Row(
+                    children: [
+                      Icon(Icons.slideshow, color: Color(0xFFD24726), size: 18),
+                      SizedBox(width: 10),
+                      Text('Microsoft PowerPoint', style: TextStyle(color: Colors.white, fontSize: 13)),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          // Exam Mode Indicator Badge on Mobile Top Bar
+          if (isExam) ...[
+            const SizedBox(width: 8),
+            GestureDetector(
+              onTap: _showSupervisorDialog,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.red.shade900.withValues(alpha: 0.9),
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(color: Colors.redAccent, width: 0.8),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.lock, size: 11, color: Colors.white),
+                    SizedBox(width: 4),
+                    Text(
+                      'EXAM',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 9,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }

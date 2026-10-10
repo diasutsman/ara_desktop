@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 import 'package:win32/win32.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -34,15 +35,53 @@ class KioskSecurityService with WindowListener {
   KioskSecurityService._internal();
 
   static const MethodChannel _kioskHookChannel = MethodChannel('ara_desktop/kiosk_hook');
+  static const MethodChannel _mobileChannel = MethodChannel('ara_desktop/mobile_kiosk');
 
   AssessmentMode _currentMode = AssessmentMode.normal;
   AssessmentMode get currentMode => _currentMode;
+  @visibleForTesting
+  set currentMode(AssessmentMode mode) {
+    _currentMode = mode;
+    modeNotifier.value = mode;
+  }
 
   final ValueNotifier<AssessmentMode> modeNotifier = ValueNotifier<AssessmentMode>(AssessmentMode.normal);
   final ValueNotifier<String?> securityAlertNotifier = ValueNotifier<String?>(null);
 
   bool isManualOverride = false;
   final ValueNotifier<bool> manualOverrideNotifier = ValueNotifier<bool>(false);
+
+  bool isOfficeSessionActive = false;
+  int violationCount = 0;
+
+  void markOfficeSessionStarted() {
+    isOfficeSessionActive = true;
+    debugPrint('[KioskSecurityService] Office Session Started - App switching allowed for Office.');
+  }
+
+  void markOfficeSessionEnded() {
+    isOfficeSessionActive = false;
+    debugPrint('[KioskSecurityService] Office Session Ended.');
+  }
+
+  void handleAppLifecycleChange(AppLifecycleState state) {
+    if (_currentMode == AssessmentMode.normal) return;
+
+    if (state == AppLifecycleState.resumed) {
+      debugPrint('[KioskSecurityService] App resumed.');
+      if (isOfficeSessionActive) {
+        markOfficeSessionEnded();
+      }
+    } else if (state == AppLifecycleState.paused || state == AppLifecycleState.hidden) {
+      debugPrint('[KioskSecurityService] App paused/hidden.');
+      if (!isOfficeSessionActive) {
+        violationCount++;
+        final msg = 'PERINGATAN: Anda terdeteksi meninggalkan aplikasi ARA Assessment saat ujian! (Pelanggaran ke-$violationCount)';
+        debugPrint('[KioskSecurityService] $msg');
+        securityAlertNotifier.value = msg;
+      }
+    }
+  }
 
   Timer? _watchdogTimer;
   int _ownProcessId = 0;
@@ -266,6 +305,35 @@ class KioskSecurityService with WindowListener {
           }
           await windowManager.setPreventClose(!isDevMode || !devBypassLockdown);
           _startWatchdog();
+          break;
+      }
+    } else if (Platform.isAndroid || Platform.isIOS) {
+      switch (mode) {
+        case AssessmentMode.normal:
+          await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+          if (Platform.isAndroid) {
+            try {
+              await _mobileChannel.invokeMethod('setFlagSecure', {'enabled': false});
+            } catch (e) {
+              debugPrint('[KioskSecurityService] Failed to setFlagSecure: $e');
+            }
+          }
+          break;
+
+        case AssessmentMode.exam:
+        case AssessmentMode.strictExam:
+        case AssessmentMode.essayExam:
+          // Mobile Kiosk:
+          // 1. Fullscreen sticky immersive mode (hide system status & nav bars)
+          await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+          // 2. Prevent screenshots and screen recording on Android
+          if (Platform.isAndroid) {
+            try {
+              await _mobileChannel.invokeMethod('setFlagSecure', {'enabled': true});
+            } catch (e) {
+              debugPrint('[KioskSecurityService] Failed to setFlagSecure: $e');
+            }
+          }
           break;
       }
     }
