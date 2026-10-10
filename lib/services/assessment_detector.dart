@@ -86,10 +86,8 @@ class AssessmentDetector {
         var hasEssayEditor = document.getElementById('answerText') !== null ||
                              document.querySelector('.cke_editor_answerText') !== null;
 
-        if (isEssayRoute || (isExam && hasEssayEditor)) {
-          reportMode('essay');
-        } else if (isExam) {
-          reportMode('strict');
+        if (isExam || isEssayRoute) {
+          reportMode('exam');
         }
       }
 
@@ -156,25 +154,20 @@ class AssessmentDetector {
       return;
     }
 
-    // 2. Essay Exam routes
-    if (path.contains('/essay') ||
-        path.contains('/esai') ||
-        path.contains('/uraian')) {
-      _kioskService.setMode(AssessmentMode.essayExam);
-      return;
-    }
-
-    // 3. Strict Exam routes (ujian / exam / soal / test / cbt / quiz / mulai / kerjakan)
+    // 2. Unified Exam routes (ujian / exam / soal / essay / esai / uraian / test / cbt / quiz / mulai / kerjakan)
     if (path.contains('/ujian') ||
         path.contains('/exam') ||
         path.contains('/soal') ||
+        path.contains('/essay') ||
+        path.contains('/esai') ||
+        path.contains('/uraian') ||
         path.contains('/test') ||
         path.contains('/cbt') ||
         path.contains('/quiz') ||
         path.contains('/mulai') ||
         path.contains('/kerjakan') ||
         path.contains('/start')) {
-      _kioskService.setMode(AssessmentMode.strictExam);
+      _kioskService.setMode(AssessmentMode.exam);
       return;
     }
   }
@@ -188,10 +181,8 @@ class AssessmentDetector {
     switch (mode) {
       case 'strict':
       case 'exam':
-        _kioskService.setMode(AssessmentMode.strictExam);
-        break;
       case 'essay':
-        _kioskService.setMode(AssessmentMode.essayExam);
+        _kioskService.setMode(AssessmentMode.exam);
         break;
       case 'normal':
       case 'idle':

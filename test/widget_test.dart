@@ -62,36 +62,39 @@ void main() {
       await kiosk.setMode(AssessmentMode.normal);
     });
 
-    test('evaluateUrl recognizes exam routes', () {
+    test('evaluateUrl recognizes exam routes as unified exam', () {
       detector.evaluateUrl('https://ara-assessment.com/ujian/mulai');
-      expect(kiosk.currentMode, AssessmentMode.strictExam);
+      expect(kiosk.currentMode, AssessmentMode.exam);
 
       detector.evaluateUrl('https://ara-assessment.com/exam/question/1');
-      expect(kiosk.currentMode, AssessmentMode.strictExam);
+      expect(kiosk.currentMode, AssessmentMode.exam);
 
       detector.evaluateUrl('https://ara-assessment.com/soal/1');
-      expect(kiosk.currentMode, AssessmentMode.strictExam);
+      expect(kiosk.currentMode, AssessmentMode.exam);
     });
 
-    test('evaluateUrl recognizes base assess landing as normal', () {
+    test('evaluateUrl recognizes base assess landing and login as normal', () {
       detector.evaluateUrl('https://ara-assessment.com/assess');
       expect(kiosk.currentMode, AssessmentMode.normal);
 
       detector.evaluateUrl('https://ara-assessment.com/assess/');
       expect(kiosk.currentMode, AssessmentMode.normal);
+
+      detector.evaluateUrl('https://ara-assessment.com/assess/login');
+      expect(kiosk.currentMode, AssessmentMode.normal);
     });
 
-    test('evaluateUrl recognizes essay routes', () {
+    test('evaluateUrl recognizes essay routes as unified exam', () {
       detector.evaluateUrl('https://ara-assessment.com/ujian/essay/soal-1');
-      expect(kiosk.currentMode, AssessmentMode.essayExam);
+      expect(kiosk.currentMode, AssessmentMode.exam);
 
       detector.evaluateUrl('https://ara-assessment.com/esai/detail');
-      expect(kiosk.currentMode, AssessmentMode.essayExam);
+      expect(kiosk.currentMode, AssessmentMode.exam);
     });
 
     test('evaluateUrl recognizes normal/exit routes', () {
       detector.evaluateUrl('https://ara-assessment.com/ujian/mulai');
-      expect(kiosk.currentMode, AssessmentMode.strictExam);
+      expect(kiosk.currentMode, AssessmentMode.exam);
 
       detector.evaluateUrl('https://ara-assessment.com/selesai');
       expect(kiosk.currentMode, AssessmentMode.normal);
@@ -105,10 +108,13 @@ void main() {
 
     test('handleModeChange processes string triggers', () {
       detector.handleModeChange('strict');
-      expect(kiosk.currentMode, AssessmentMode.strictExam);
+      expect(kiosk.currentMode, AssessmentMode.exam);
 
       detector.handleModeChange('essay');
-      expect(kiosk.currentMode, AssessmentMode.essayExam);
+      expect(kiosk.currentMode, AssessmentMode.exam);
+
+      detector.handleModeChange('exam');
+      expect(kiosk.currentMode, AssessmentMode.exam);
 
       detector.handleModeChange('normal');
       expect(kiosk.currentMode, AssessmentMode.normal);

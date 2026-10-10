@@ -130,13 +130,11 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener {
                         Row(
                           children: [
                             Text(
-                              'Mode: ${currentMode.name.toUpperCase()}',
+                              'Mode: ${currentMode == AssessmentMode.normal ? "NORMAL" : "UJIAN (EXAM)"}',
                               style: TextStyle(
-                                color: currentMode == AssessmentMode.strictExam
-                                    ? Colors.redAccent
-                                    : currentMode == AssessmentMode.essayExam
-                                        ? Colors.orangeAccent
-                                        : Colors.greenAccent,
+                                color: currentMode == AssessmentMode.normal
+                                    ? Colors.greenAccent
+                                    : Colors.redAccent,
                                 fontWeight: FontWeight.bold,
                                 fontSize: 15,
                               ),
@@ -197,32 +195,16 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener {
                         const SizedBox(height: 4),
                         ListTile(
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                          tileColor: (isManual && currentMode == AssessmentMode.strictExam)
+                          tileColor: (isManual && currentMode != AssessmentMode.normal)
                               ? Colors.white12
                               : Colors.transparent,
                           leading: const Icon(Icons.lock, color: Colors.redAccent),
-                          title: const Text('Kunci: Strict Exam (Hanya ARA)',
+                          title: const Text('Kunci: Mode Ujian (Hanya ARA & Office Utilities)',
                               style: TextStyle(color: Colors.white, fontSize: 14)),
-                          subtitle: const Text('Blokir Alt+Tab, WinKey, & semua aplikasi lain',
+                          subtitle: const Text('Bolehkan Word, Excel, & PowerPoint; blokir semua aplikasi lain',
                               style: TextStyle(color: Colors.white54, fontSize: 11)),
                           onTap: () async {
-                            await _kioskService.setManualMode(AssessmentMode.strictExam);
-                            if (ctx.mounted) Navigator.pop(ctx);
-                          },
-                        ),
-                        const SizedBox(height: 4),
-                        ListTile(
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                          tileColor: (isManual && currentMode == AssessmentMode.essayExam)
-                              ? Colors.white12
-                              : Colors.transparent,
-                          leading: const Icon(Icons.edit_note, color: Colors.orangeAccent),
-                          title: const Text('Kunci: Essay Exam (Word & PPT Saja)',
-                              style: TextStyle(color: Colors.white, fontSize: 14)),
-                          subtitle: const Text('Bolehkan Word & PowerPoint',
-                              style: TextStyle(color: Colors.white54, fontSize: 11)),
-                          onTap: () async {
-                            await _kioskService.setManualMode(AssessmentMode.essayExam);
+                            await _kioskService.setManualMode(AssessmentMode.exam);
                             if (ctx.mounted) Navigator.pop(ctx);
                           },
                         ),
@@ -316,9 +298,9 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener {
           children: [
             // Main Webview
             InAppWebView(
-              initialUrlRequest: URLRequest(
-                url: WebUri('https://ara-assessment.com/assess'),
-              ),
+                    initialUrlRequest: URLRequest(
+                      url: WebUri('https://ara-assessment.com/assess/login'),
+                    ),
               initialSettings: InAppWebViewSettings(
                 javaScriptEnabled: true,
                 allowsInlineMediaPlayback: true,
@@ -495,32 +477,30 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener {
                 valueListenable: _kioskService.modeNotifier,
                 builder: (context, mode, _) {
                   if (mode != AssessmentMode.normal) {
-                    final isStrict = mode == AssessmentMode.strictExam;
                     return GestureDetector(
                       onDoubleTap: _showSupervisorDialog,
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                         decoration: BoxDecoration(
-                          color: (isStrict ? Colors.red.shade900 : Colors.amber.shade900)
-                              .withValues(alpha: 0.85),
+                          color: Colors.red.shade900.withValues(alpha: 0.85),
                           borderRadius: BorderRadius.circular(12),
                           border: Border.all(
-                            color: isStrict ? Colors.redAccent : Colors.amberAccent,
+                            color: Colors.redAccent,
                             width: 1,
                           ),
                         ),
-                        child: Row(
+                        child: const Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             Icon(
-                              isStrict ? Icons.lock : Icons.edit_note,
+                              Icons.lock,
                               size: 14,
                               color: Colors.white,
                             ),
-                            const SizedBox(width: 4),
+                            SizedBox(width: 4),
                             Text(
-                              isStrict ? 'LOCKDOWN AKTIF' : 'MODE ESSAY (WORD & PPT)',
-                              style: const TextStyle(
+                              'MODE UJIAN AKTIF (WORD, EXCEL, PPT)',
+                              style: TextStyle(
                                 color: Colors.white,
                                 fontSize: 10,
                                 fontWeight: FontWeight.bold,

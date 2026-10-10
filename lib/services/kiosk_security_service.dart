@@ -9,8 +9,9 @@ import 'package:window_manager/window_manager.dart';
 
 enum AssessmentMode {
   normal,      // Browsing / Dashboard - No restrictions
-  strictExam,  // Regular exam - Only ARA Assessment is allowed, all other apps minimized
-  essayExam,   // Essay exam - ARA Assessment, MS Word, and MS PowerPoint allowed
+  exam,        // Unified exam mode - ARA Assessment, MS Word, Excel, and PowerPoint allowed
+  strictExam,  // Alias/compatibility with exam
+  essayExam,   // Alias/compatibility with exam
 }
 
 enum WindowAction {
@@ -78,9 +79,10 @@ class KioskSecurityService with WindowListener {
     'flutter.exe',
   };
 
-  // Allowed executables in essay mode (case-insensitive)
+  // Allowed executables in essay / utilities mode (case-insensitive)
   final Set<String> _essayWhitelist = {
     'winword.exe',
+    'excel.exe',
     'powerpnt.exe',
     // Essential Windows OS components
     'explorer.exe',
@@ -128,6 +130,17 @@ class KioskSecurityService with WindowListener {
     if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       windowManager.addListener(this);
       _ownProcessId = _getOwnProcessId();
+
+      // Listen for native Win32 menu commands from C++ runner
+      _kioskHookChannel.setMethodCallHandler((call) async {
+        if (call.method == 'onOfficeLaunched') {
+          final app = call.arguments?.toString() ?? 'office';
+          debugPrint('[KioskSecurityService] Native Win32 Menu triggered: $app');
+          if (_currentMode == AssessmentMode.normal) {
+            await setMode(AssessmentMode.exam);
+          }
+        }
+      });
     }
   }
 
@@ -176,23 +189,18 @@ class KioskSecurityService with WindowListener {
         }
         await windowManager.setAlwaysOnTop(false);
         await windowManager.setPreventClose(false);
-      } else if (_currentMode == AssessmentMode.strictExam) {
-        await _setKioskHook(true);
-        await _setWindowLock(true);
-        await windowManager.setTitleBarStyle(TitleBarStyle.hidden, windowButtonVisibility: false);
-        await windowManager.setResizable(false);
-        await windowManager.setMinimizable(false);
-        await windowManager.setMaximizable(false);
-        await windowManager.setFullScreen(true);
-        await windowManager.setAlwaysOnTop(true);
-      } else if (_currentMode == AssessmentMode.essayExam) {
+      } else if (_currentMode == AssessmentMode.exam ||
+                 _currentMode == AssessmentMode.strictExam ||
+                 _currentMode == AssessmentMode.essayExam) {
         await _setKioskHook(false);
         await _setWindowLock(true);
-        await windowManager.setTitleBarStyle(TitleBarStyle.hidden, windowButtonVisibility: false);
+        await windowManager.setTitleBarStyle(TitleBarStyle.normal);
         await windowManager.setResizable(false);
         await windowManager.setMinimizable(false);
         await windowManager.setMaximizable(false);
-        await windowManager.setFullScreen(false);
+        if (await windowManager.isFullScreen()) {
+          await windowManager.setFullScreen(false);
+        }
         await windowManager.maximize();
         await windowManager.setAlwaysOnTop(false);
       }
@@ -235,30 +243,16 @@ class KioskSecurityService with WindowListener {
           await windowManager.setPreventClose(false);
           break;
 
+        case AssessmentMode.exam:
         case AssessmentMode.strictExam:
-          if (!devBypassLockdown) {
-            await _setKioskHook(true);
-            await _setWindowLock(true);
-            await windowManager.setTitleBarStyle(TitleBarStyle.hidden, windowButtonVisibility: false);
-            await windowManager.setResizable(false);
-            await windowManager.setMinimizable(false);
-            await windowManager.setMaximizable(false);
-            await windowManager.setFullScreen(true);
-            await windowManager.setAlwaysOnTop(true);
-          }
-          await windowManager.setPreventClose(!isDevMode || !devBypassLockdown);
-          await windowManager.focus();
-          _startWatchdog();
-          break;
-
         case AssessmentMode.essayExam:
-          // In essay exam:
-          // 1. Unhook Alt+Tab to allow switching between ARA, Word, and PowerPoint
+          // Unified exam mode:
+          // 1. Unhook Alt+Tab to allow switching between ARA, Word, Excel, and PowerPoint
           await _setKioskHook(false);
-          // 2. Lock window controls so ARA cannot be closed, minimized, or resized
+          // 2. Lock window controls so ARA cannot be closed, minimized, or resized (native WS_SYSMENU stripped)
           await _setWindowLock(true);
           if (!devBypassLockdown) {
-            await windowManager.setTitleBarStyle(TitleBarStyle.hidden, windowButtonVisibility: false);
+            await windowManager.setTitleBarStyle(TitleBarStyle.normal);
             await windowManager.setResizable(false);
             await windowManager.setMinimizable(false);
             await windowManager.setMaximizable(false);
@@ -267,7 +261,7 @@ class KioskSecurityService with WindowListener {
               await windowManager.setFullScreen(false);
             }
             await windowManager.maximize();
-            // Don't stay on top so Word and PowerPoint can appear over ARA
+            // Don't stay on top so Word, Excel, and PowerPoint can appear over ARA
             await windowManager.setAlwaysOnTop(false);
           }
           await windowManager.setPreventClose(!isDevMode || !devBypassLockdown);
@@ -391,22 +385,16 @@ class KioskSecurityService with WindowListener {
       );
     }
 
-    // 2. Strict Mode: NO other app is permitted
-    if (mode == AssessmentMode.strictExam) {
-      return SecurityPolicyEvaluation(
-        WindowAction.block,
-        'Aplikasi "$lowerExe" diblokir! Selama sesi ujian ketat, Anda tidak diizinkan membuka aplikasi lain.',
-      );
-    }
-
-    // 3. Essay Mode: Word, PowerPoint, and system shell permitted
-    if (mode == AssessmentMode.essayExam) {
+    // 2. Unified Exam Mode: Word, Excel, PowerPoint, and system shell permitted; all other apps blocked
+    if (mode == AssessmentMode.exam ||
+        mode == AssessmentMode.strictExam ||
+        mode == AssessmentMode.essayExam) {
       // Handle explorer.exe: Distinguish Taskbar/Desktop vs File Explorer (CabinetWClass) and Run dialog
       if (lowerExe == 'explorer.exe') {
         if (className == 'CabinetWClass' || className == 'ExploreWClass') {
           return const SecurityPolicyEvaluation(
             WindowAction.block,
-            'File Explorer diblokir! Anda tidak diizinkan membuka folder/file selama sesi essay.',
+            'File Explorer diblokir! Anda tidak diizinkan membuka folder/file selama sesi ujian.',
           );
         }
         if (className == '#32770' &&
@@ -421,12 +409,12 @@ class KioskSecurityService with WindowListener {
 
       final isWhitelisted = _essayWhitelist.contains(lowerExe);
       if (isWhitelisted) {
-        return const SecurityPolicyEvaluation(WindowAction.allow, 'Essay whitelist');
+        return const SecurityPolicyEvaluation(WindowAction.allow, 'Exam whitelist');
       }
 
       return SecurityPolicyEvaluation(
         WindowAction.block,
-        'Aplikasi "$lowerExe" diblokir! Pada sesi essay, hanya Microsoft Word dan PowerPoint yang diizinkan.',
+        'Aplikasi "$lowerExe" diblokir! Pada sesi ujian, hanya Microsoft Word, Excel, dan PowerPoint yang diizinkan.',
       );
     }
 
@@ -507,11 +495,7 @@ class KioskSecurityService with WindowListener {
 
   @override
   void onWindowBlur() {
-    if (_currentMode == AssessmentMode.strictExam && !devBypassLockdown) {
-      // In strict exam mode, refocus immediately if window loses focus
-      windowManager.focus();
-      windowManager.setAlwaysOnTop(true);
-    }
+    // Watchdog handles active window verification
   }
 
   @override

@@ -1,6 +1,7 @@
 #include "flutter_window.h"
 
 #include <optional>
+#include <shellapi.h>
 
 #include "flutter/generated_plugin_registrant.h"
 #include "kiosk_hook.h"
@@ -95,6 +96,30 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
         }
         break;
     }
+  }
+
+  // Handle Native Win32 Menu commands (WM_COMMAND)
+  if (message == WM_COMMAND) {
+    UINT id = LOWORD(wparam);
+    if (id == ID_MENU_WORD) {
+      ::ShellExecuteW(nullptr, L"open", L"winword.exe", nullptr, nullptr, SW_SHOWNORMAL);
+      NotifyOfficeAppLaunched("winword");
+      return 0;
+    } else if (id == ID_MENU_EXCEL) {
+      ::ShellExecuteW(nullptr, L"open", L"excel.exe", nullptr, nullptr, SW_SHOWNORMAL);
+      NotifyOfficeAppLaunched("excel");
+      return 0;
+    } else if (id == ID_MENU_POWERPOINT) {
+      ::ShellExecuteW(nullptr, L"open", L"powerpnt.exe", nullptr, nullptr, SW_SHOWNORMAL);
+      NotifyOfficeAppLaunched("powerpnt");
+      return 0;
+    }
+  }
+
+  // Handle Native Win32 MenuBar Dark Theme Rendering
+  LRESULT menuResult = 0;
+  if (HandleNativeMenuBarMessage(hwnd, message, wparam, lparam, &menuResult)) {
+    return menuResult;
   }
 
   // Give Flutter, including plugins, an opportunity to handle window messages.

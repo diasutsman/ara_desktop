@@ -83,7 +83,7 @@ void main() {
     // -------------------------------------------------------------
     // EXPLOIT 2: Essay Mode Whitelist (Word, PPT) vs Blacklist (Excel, Chrome, Edge)
     // -------------------------------------------------------------
-    group('Exploit 2: Essay Mode Whitelist vs Blacklist (PowerPoint vs Excel)', () {
+    group('Exploit 2: Essay / Utilities Whitelist (Word, PPT, Excel) vs Blacklist (Chrome, Edge)', () {
       test('Microsoft Word (winword.exe) is ALLOWED in Essay Mode', () {
         final eval = service.evaluateWindowPolicy(
           mode: AssessmentMode.essayExam,
@@ -108,7 +108,7 @@ void main() {
         expect(eval.isAllowed, isTrue);
       });
 
-      test('Microsoft Excel (excel.exe) MUST BE BLOCKED in Essay Mode', () {
+      test('Microsoft Excel (excel.exe) is ALLOWED in Essay Mode', () {
         final eval = service.evaluateWindowPolicy(
           mode: AssessmentMode.essayExam,
           processExe: 'excel.exe',
@@ -117,8 +117,7 @@ void main() {
           isOwnProcess: false,
           isDevBypass: false,
         );
-        expect(eval.isBlocked, isTrue);
-        expect(eval.reason, contains('hanya Microsoft Word dan PowerPoint yang diizinkan'));
+        expect(eval.isAllowed, isTrue);
       });
 
       test('Google Chrome (chrome.exe) MUST BE BLOCKED in Essay Mode', () {
@@ -247,26 +246,48 @@ void main() {
         expect(eval.isAllowed, isTrue);
       });
 
-      test('Strict Mode BLOCKS Word and PowerPoint as well', () {
+      test('Unified Exam Mode ALLOWS Word, Excel, and PowerPoint', () {
         final evalWord = service.evaluateWindowPolicy(
-          mode: AssessmentMode.strictExam,
+          mode: AssessmentMode.exam,
           processExe: 'winword.exe',
           className: 'OpusApp',
           windowTitle: 'Document1',
           isOwnProcess: false,
           isDevBypass: false,
         );
-        expect(evalWord.isBlocked, isTrue);
+        expect(evalWord.isAllowed, isTrue);
+
+        final evalExcel = service.evaluateWindowPolicy(
+          mode: AssessmentMode.exam,
+          processExe: 'excel.exe',
+          className: 'XLMAIN',
+          windowTitle: 'Book1',
+          isOwnProcess: false,
+          isDevBypass: false,
+        );
+        expect(evalExcel.isAllowed, isTrue);
 
         final evalPpt = service.evaluateWindowPolicy(
-          mode: AssessmentMode.strictExam,
+          mode: AssessmentMode.exam,
           processExe: 'powerpnt.exe',
           className: 'PPTFrameClass',
           windowTitle: 'Presentation1',
           isOwnProcess: false,
           isDevBypass: false,
         );
-        expect(evalPpt.isBlocked, isTrue);
+        expect(evalPpt.isAllowed, isTrue);
+      });
+
+      test('Unified Exam Mode BLOCKS unauthorized apps like Chrome', () {
+        final evalChrome = service.evaluateWindowPolicy(
+          mode: AssessmentMode.exam,
+          processExe: 'chrome.exe',
+          className: 'Chrome_WidgetWin_1',
+          windowTitle: 'Google Chrome',
+          isOwnProcess: false,
+          isDevBypass: false,
+        );
+        expect(evalChrome.isBlocked, isTrue);
       });
 
       test('Normal Mode ALLOWS all applications', () {
