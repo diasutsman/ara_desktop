@@ -42,6 +42,9 @@
   - Intercept `WM_SYSCOMMAND` and `WM_NCLBUTTONDBLCLK` to prevent window un-maximizing or closing.
 
 ## 4. Mobile (Android & iOS) Kiosk & Office Integration
+- **Platform Parity Invariant**: Every WebView or Office feature added for Windows MUST also be
+  implemented and verified for Android & iOS (Dart branch + native channel + manifest/plist entries).
+  Desktop-only hooks must be guarded with `Platform.isWindows/isMacOS`, mobile hooks with `_isMobile`.
 - **Navigation Lock**:
   - Wrap root view with `PopScope(canPop: !isExam)` to block Android system back gestures/buttons during exams.
 - **Immersive Mode**:
@@ -50,22 +53,38 @@
   - Enforce `FLAG_SECURE` on Android via native `MethodChannel("ara_desktop/mobile_kiosk")` to block screenshots and screen recordings during exams.
 - **Multi-App Lifecycle & Office Session**:
   - Manage authorized app switching using an `isOfficeSessionActive` session flag.
-  - When the user launches Word/Excel/PPT via the Utilities menu, set `isOfficeSessionActive = true`.
+  - When the user launches Word/Excel/PPT via the Utilities menu OR opens a portal document, set `isOfficeSessionActive = true`.
+  - The session persists for the whole exam (parity with desktop Alt+Tab); it is cleared only when mode returns to `normal`.
   - On app pause/resume:
     - If `isOfficeSessionActive == true`: allow the switch without penalty.
     - If `isOfficeSessionActive == false` and in exam mode: record a security violation (`violationCount++`) and trigger a warning alert.
+    - On resume during an exam, re-apply `SystemUiMode.immersiveSticky`.
 - **Package Visibility & URI Schemes**:
   - Android: Declare `<queries>` in `AndroidManifest.xml` for `com.microsoft.office.*` and schemes `ms-word`, `ms-excel`, `ms-powerpoint`, `ms-office`.
   - iOS: Declare `LSApplicationQueriesSchemes` in `Info.plist` for `ms-word`, `ms-excel`, `ms-powerpoint`, `ms-office`.
   - Fallback: Direct users to official Google Play Store or Apple App Store links when an app is not installed.
+- **Opening Portal Documents (.doc/.docx/.xls/.xlsx/.ppt/.pptx)**:
+  - Mobile WebView uses `useShouldOverrideUrlLoading` + `useOnDownloadStart`; pass the callbacks as `null` on desktop
+    (flutter_inappwebview auto-enables the hooks when a callback is set).
+  - Download with per-host CookieManager cookies (manual redirects) into `getTemporaryDirectory()/ara_documents/`.
+  - Open via `ara_desktop/mobile_kiosk` → `openDocument`: Android = `AraDocumentFileProvider` + `ACTION_VIEW` targeted at the Office package;
+    iOS = `UIDocumentInteractionController` "Open in…" sheet (iOS cannot target a specific app).
+  - Android `<queries>` must include `ACTION_VIEW` + each Office MIME type.
+- **iOS Native Channel**: `AraMobileKioskPlugin` lives inside `ios/Runner/AppDelegate.swift` (avoids hand-editing
+  `project.pbxproj` from Windows), registered in `didInitializeImplicitFlutterEngine` via `engineBridge.pluginRegistry.registrar(forPlugin:)`.
 
 ## 5. Mobile (Android & iOS) WebView Reliability & Branding Invariants
+- **iOS Permissions (Swift Package Manager project)**:
+  - `ios/Runner/Info.plist` MUST contain `NSCameraUsageDescription` and `NSMicrophoneUsageDescription`.
+    `permission_handler_apple` (SwiftPM) enables permissions ONLY from these keys; missing keys = crash/denied. No Podfile macros needed.
+  - iOS cannot be built on the Windows workstation; flag Swift changes for verification on a Mac (`flutter build ios --no-codesign`).
 - **Network & SSL Resilience**:
   - In `AndroidManifest.xml`, configure `android:usesCleartextTraffic="true"` inside `<application>`.
   - In `InAppWebViewSettings`:
     - Set `mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW`.
     - Set `thirdPartyCookiesEnabled: true`, `domStorageEnabled: true`, `databaseEnabled: true`.
-    - Provide a modern Mobile Chrome `userAgent` to prevent restrictive `wv` bot filtering.
+    - Provide a platform-specific `userAgent`: Chrome Mobile on Android, Mobile Safari on iOS, `null` on desktop.
+    - On iOS set `allowsBackForwardNavigationGestures: false` and `allowsLinkPreview: false` (swipe-back bypasses `PopScope`).
   - Implement `onReceivedServerTrustAuthRequest`:
     - For target assessment domains (`ara-assessment.com`), return `ServerTrustAuthResponse(action: ServerTrustAuthResponseAction.PROCEED)` to prevent silent drops from TLS renegotiation or intermediate certificate validation.
 - **Visual Branding & App Name**:

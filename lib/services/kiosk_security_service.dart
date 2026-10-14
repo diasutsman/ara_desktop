@@ -40,9 +40,16 @@ class KioskSecurityService with WindowListener {
   AssessmentMode _currentMode = AssessmentMode.normal;
   AssessmentMode get currentMode => _currentMode;
   @visibleForTesting
-  set currentMode(AssessmentMode mode) {
+  set currentMode(AssessmentMode mode) => _applyModeState(mode);
+
+  /// Updates mode state shared by [setMode] and the test setter.
+  /// Leaving the exam (back to Normal) also ends any authorized Office session.
+  void _applyModeState(AssessmentMode mode) {
     _currentMode = mode;
     modeNotifier.value = mode;
+    if (mode == AssessmentMode.normal && isOfficeSessionActive) {
+      markOfficeSessionEnded();
+    }
   }
 
   final ValueNotifier<AssessmentMode> modeNotifier = ValueNotifier<AssessmentMode>(AssessmentMode.normal);
@@ -68,10 +75,11 @@ class KioskSecurityService with WindowListener {
     if (_currentMode == AssessmentMode.normal) return;
 
     if (state == AppLifecycleState.resumed) {
-      debugPrint('[KioskSecurityService] App resumed.');
-      if (isOfficeSessionActive) {
-        markOfficeSessionEnded();
-      }
+      // The Office session intentionally persists for the whole exam so the participant can
+      // switch back and forth between ARA and Word/Excel/PowerPoint (parity with desktop Alt+Tab).
+      // It is cleared only when the mode returns to Normal (see _applyModeState).
+      debugPrint('[KioskSecurityService] App resumed (officeSessionActive: $isOfficeSessionActive).');
+      _reapplyMobileImmersiveMode();
     } else if (state == AppLifecycleState.paused || state == AppLifecycleState.hidden) {
       debugPrint('[KioskSecurityService] App paused/hidden.');
       if (!isOfficeSessionActive) {
@@ -81,6 +89,14 @@ class KioskSecurityService with WindowListener {
         securityAlertNotifier.value = msg;
       }
     }
+  }
+
+  /// Android/iOS may restore the system bars after returning from another app (e.g. Word).
+  void _reapplyMobileImmersiveMode() {
+    if (kIsWeb || !(Platform.isAndroid || Platform.isIOS)) return;
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky).catchError((Object e) {
+      debugPrint('[KioskSecurityService] Failed to re-apply immersive mode: $e');
+    });
   }
 
   Timer? _watchdogTimer;
@@ -258,8 +274,7 @@ class KioskSecurityService with WindowListener {
 
   Future<void> setMode(AssessmentMode mode) async {
     if (_currentMode == mode) return;
-    _currentMode = mode;
-    modeNotifier.value = mode;
+    _applyModeState(mode);
 
     debugPrint('[KioskSecurityService] Switching mode to: $mode (isDevMode: $isDevMode, devBypass: $devBypassLockdown)');
 

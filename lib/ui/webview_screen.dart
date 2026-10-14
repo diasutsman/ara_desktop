@@ -1,12 +1,15 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:window_manager/window_manager.dart';
 import '../services/assessment_detector.dart';
 import '../services/kiosk_security_service.dart';
+import '../services/office_document_service.dart';
 import '../services/office_launcher_service.dart';
 
 class WebViewScreen extends StatefulWidget {
@@ -30,6 +33,23 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
   bool _isSupervisorDialogOpen = false;
 
   bool get _isMobile => !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+
+  /// Platform-specific mobile user agent (desktop keeps the engine default).
+  /// Android: modern Chrome Mobile UA to avoid restrictive `wv` bot filtering.
+  /// iOS: Mobile Safari UA (an Android UA on WKWebView makes sites serve Android-only flows).
+  String? get _platformUserAgent {
+    if (kIsWeb) return null;
+    if (Platform.isAndroid) {
+      return 'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36';
+    }
+    if (Platform.isIOS) {
+      return 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1';
+    }
+    return null;
+  }
+
+  static const Set<String> _passThroughSchemes = {'http', 'https', 'about', 'data', 'blob', 'javascript', 'file'};
+  static const Set<String> _officeSchemes = {'ms-word', 'ms-excel', 'ms-powerpoint', 'ms-office'};
 
   @override
   void initState() {
@@ -103,6 +123,147 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
         debugPrint('[Permissions] Error requesting hardware permissions: $e');
       }
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Mobile: Office documents & external links opened from the portal
+  // ---------------------------------------------------------------------------
+
+  void _showOfficeResult(OfficeLaunchResult res) {
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(res.message),
+        backgroundColor: res.success
+            ? Colors.green.shade800
+            : (res.openedStore ? Colors.orange.shade800 : Colors.red.shade800),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  Future<NavigationActionPolicy> _handleMobileNavigation(
+    InAppWebViewController controller,
+    NavigationAction action,
+  ) async {
+    final uri = Uri.tryParse(action.request.url?.toString() ?? '');
+    if (uri == null) return NavigationActionPolicy.ALLOW;
+    final scheme = uri.scheme.toLowerCase();
+
+    if (scheme == 'http' || scheme == 'https') {
+      // Main-frame links to .doc/.docx/.xls/.xlsx/.ppt/.pptx -> open in the Office app.
+      // Sub-frames are left alone so embedded viewers keep working.
+      if (action.isForMainFrame && OfficeDocumentService.isOfficeDocumentUrl(uri)) {
+        unawaited(_openPortalDocument(uri));
+        return NavigationActionPolicy.CANCEL;
+      }
+      return NavigationActionPolicy.ALLOW;
+    }
+
+    if (_passThroughSchemes.contains(scheme)) return NavigationActionPolicy.ALLOW;
+
+    if (_officeSchemes.contains(scheme)) {
+      unawaited(_launchOfficeScheme(uri));
+      return NavigationActionPolicy.CANCEL;
+    }
+
+    // Other external schemes (tel:, mailto:, intent:, ...): never render an error page;
+    // only allowed to leave the app outside of an exam.
+    if (_kioskService.currentMode == AssessmentMode.normal) {
+      unawaited(
+        launchUrl(uri, mode: LaunchMode.externalApplication).catchError((Object e) {
+          debugPrint('[InAppWebView] Cannot open external link $uri: $e');
+          return false;
+        }),
+      );
+    } else {
+      _showOfficeResult(const OfficeLaunchResult(
+        success: false,
+        message: 'Membuka aplikasi lain diblokir selama ujian.',
+      ));
+    }
+    return NavigationActionPolicy.CANCEL;
+  }
+
+  Future<void> _launchOfficeScheme(Uri uri) async {
+    final scheme = uri.scheme.toLowerCase();
+    final app = scheme == 'ms-excel'
+        ? OfficeAppConfig.excel
+        : (scheme == 'ms-powerpoint' ? OfficeAppConfig.powerPoint : OfficeAppConfig.word);
+
+    _kioskService.markOfficeSessionStarted();
+    var launched = false;
+    try {
+      launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (e) {
+      debugPrint('[InAppWebView] Office scheme launch failed for $uri: $e');
+    }
+    if (!launched) {
+      _showOfficeResult(await OfficeLauncherService().openStoreFor(app));
+    }
+  }
+
+  Future<void> _handleMobileDownload(
+    InAppWebViewController controller,
+    DownloadStartRequest request,
+  ) async {
+    debugPrint('[InAppWebView] Download requested: ${request.url} (${request.mimeType}, ${request.suggestedFilename})');
+    final uri = Uri.tryParse(request.url.toString());
+    if (uri == null) return;
+    await _openPortalDocument(
+      uri,
+      suggestedFileName: request.suggestedFilename,
+      mimeType: request.mimeType,
+      userAgent: request.userAgent,
+    );
+  }
+
+  Future<void> _openPortalDocument(
+    Uri uri, {
+    String? suggestedFileName,
+    String? mimeType,
+    String? userAgent,
+  }) async {
+    final service = OfficeDocumentService();
+    if (service.isBusy) {
+      _showOfficeResult(const OfficeLaunchResult(
+        success: false,
+        message: 'Dokumen lain sedang diunduh, mohon tunggu sebentar...',
+      ));
+      return;
+    }
+
+    if (mounted) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          const SnackBar(
+            content: Row(
+              children: [
+                SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                ),
+                SizedBox(width: 12),
+                Expanded(child: Text('Mengunduh & membuka dokumen...')),
+              ],
+            ),
+            backgroundColor: Color(0xFF1E1E2E),
+            duration: Duration(minutes: 2),
+          ),
+        );
+    }
+
+    final res = await service.downloadAndOpen(
+      url: uri,
+      suggestedFileName: suggestedFileName,
+      mimeType: mimeType,
+      userAgent: (userAgent != null && userAgent.isNotEmpty) ? userAgent : _platformUserAgent,
+    );
+    _showOfficeResult(res);
   }
 
   void _showSupervisorDialog() {
@@ -355,9 +516,13 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                 allowContentAccess: true,
                 javaScriptCanOpenWindowsAutomatically: true,
                 cacheEnabled: true,
-                userAgent: _isMobile
-                    ? 'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36'
-                    : null,
+                userAgent: _platformUserAgent,
+                // Mobile-only hooks for opening portal Office documents (desktop unchanged).
+                useShouldOverrideUrlLoading: _isMobile,
+                useOnDownloadStart: _isMobile,
+                // iOS: WKWebView swipe-back bypasses PopScope, and link previews can escape to Safari.
+                allowsBackForwardNavigationGestures: false,
+                allowsLinkPreview: false,
               ),
               onWebViewCreated: (controller) {
                 _webViewController = controller;
@@ -379,6 +544,9 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                   action: PermissionResponseAction.GRANT,
                 );
               },
+              // Passed as null on desktop: flutter_inappwebview auto-enables these hooks when set.
+              shouldOverrideUrlLoading: _isMobile ? _handleMobileNavigation : null,
+              onDownloadStartRequest: _isMobile ? _handleMobileDownload : null,
               onLoadStart: (controller, url) {
                 setState(() {
                   _isLoading = true;
@@ -586,37 +754,40 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                 valueListenable: _kioskService.modeNotifier,
                 builder: (context, mode, _) {
                   if (mode != AssessmentMode.normal && !_isMobile) {
-                    return GestureDetector(
-                      onDoubleTap: _showSupervisorDialog,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                        decoration: BoxDecoration(
-                          color: Colors.red.shade900.withValues(alpha: 0.85),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: Colors.redAccent,
-                            width: 1,
+                    return Tooltip(
+                      message: 'Mode Ujian Aktif: Akses Word, Excel & PPT via Menu Utilities',
+                      child: GestureDetector(
+                        onDoubleTap: _showSupervisorDialog,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                          decoration: BoxDecoration(
+                            color: Colors.red.shade900.withValues(alpha: 0.85),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: Colors.redAccent,
+                              width: 1,
+                            ),
                           ),
-                        ),
-                        child: const Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              Icons.lock,
-                              size: 14,
-                              color: Colors.white,
-                            ),
-                            SizedBox(width: 4),
-                            Text(
-                              'MODE UJIAN AKTIF (WORD, EXCEL, PPT)',
-                              style: TextStyle(
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.lock,
+                                size: 14,
                                 color: Colors.white,
-                                fontSize: 10,
-                                fontWeight: FontWeight.bold,
-                                letterSpacing: 0.5,
                               ),
-                            ),
-                          ],
+                              SizedBox(width: 4),
+                              Text(
+                                'MODE UJIAN AKTIF (WORD, EXCEL, PPT)',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 0.5,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                     );
@@ -776,6 +947,18 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                   side: const BorderSide(color: Colors.white24, width: 1),
                 ),
               ),
+              tooltipTheme: TooltipThemeData(
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1E1E1E),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: Colors.white24, width: 1),
+                ),
+                textStyle: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
             ),
             child: PopupMenuButton<String>(
               tooltip: 'Utilities',
@@ -790,19 +973,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                 } else {
                   res = await OfficeLauncherService().launchPowerPoint();
                 }
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text(res.message),
-                      backgroundColor: res.success
-                          ? Colors.green.shade800
-                          : (res.openedStore
-                              ? Colors.orange.shade800
-                              : Colors.red.shade800),
-                      duration: const Duration(seconds: 3),
-                    ),
-                  );
-                }
+                _showOfficeResult(res);
               },
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),

@@ -9,9 +9,12 @@
    - Jangan menggunakan custom Flutter widget untuk menu bar jika pengguna meminta menu bar native ("JANGAN CUSTOM").
    - Tangani interaksi menu via pesan `WM_COMMAND` di `FlutterWindow::MessageHandler` dan teruskan event ke Dart melalui `MethodChannel` (`NotifyOfficeAppLaunched`).
 
-3. **Restricted Mode Window Architecture**:
-   - Di mode restricted (ujian/kiosk), kontrol jendela native Windows (minimize, maximize/restore, close) dicopot bit style-nya via `WS_SYSMENU`, `WS_MINIMIZEBOX`, `WS_MAXIMIZEBOX` di C++ runner (`SetWindowLongPtr`).
-   - Title bar dan native `HMENU` tetap tampil dan aktif tanpa tombol minimize, maximize, atau close.
+3. **Restricted Mode Window Architecture & Menu Bar Visibility**:
+   - Di mode restricted (ujian/kiosk), kontrol jendela native Windows (minimize, maximize) dicopot bit style-nya via `WS_MINIMIZEBOX` dan `WS_MAXIMIZEBOX`.
+   - **DILARANG MENCOPO WS_SYSMENU**: Mencopot bit `WS_SYSMENU` merusak pelacakan native menu Win32 dan membuat menu bar hilang atau berwarna putih.
+   - Untuk menonaktifkan tombol Close ('X') secara native, gunakan `::EnableMenuItem(::GetSystemMenu(hwnd, FALSE), SC_CLOSE, MF_BYCOMMAND | MF_DISABLED | MF_GRAYED)` dan cegah pesan `SC_CLOSE` pada `WM_SYSCOMMAND`.
+   - Title bar dan native `HMENU` ("Utilities") WAJIB selalu tampil dan aktif. Panggil `::DrawMenuBar(hwnd)` setiap kali status lock window diubah.
+   - **DILARANG MEMANGGIL `SetWindowTheme(hwnd, L"DarkMode_Explorer", nullptr)`** pada jendela utama ber-menu bar karena `DarkMode_Explorer` secara default menyembunyikan classic menu bar Win32.
 
 4. **Initial Landing URL**:
    - Aplikasi selalu mengarah ke `https://ara-assessment.com/assess/login` sebagai landing page utama saat startup.

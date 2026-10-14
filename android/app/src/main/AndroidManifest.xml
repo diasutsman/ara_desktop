@@ -37,6 +37,16 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <!-- Shares downloaded portal documents (cacheDir/ara_documents) with Office apps -->
+        <provider
+            android:name=".AraDocumentFileProvider"
+            android:authorities="${applicationId}.ara_documents"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/ara_document_paths" />
+        </provider>
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and
@@ -64,6 +74,36 @@
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="ms-office" />
+        </intent>
+        <!-- Package visibility for opening downloaded Office documents (ACTION_VIEW by MIME type) -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="application/msword" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="application/vnd.ms-excel" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="application/vnd.ms-powerpoint" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="application/vnd.openxmlformats-officedocument.presentationml.presentation" />
+        </intent>
+        <!-- Lets url_launcher resolve https links opened outside of exams -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
         </intent>
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>

@@ -31,7 +31,7 @@ bool FlutterWindow::OnCreate() {
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
-    this->Show();
+    ::ShowWindow(this->GetHandle(), SW_SHOWMAXIMIZED);
   });
 
   // Flutter can complete the first frame before the "show window" callback is
@@ -63,7 +63,7 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
       case WM_NCLBUTTONDBLCLK:
         return 0;
 
-      // 2. Block system commands: Minimize, Restore (unmaximize), Maximize, Move/Drag, Resize, Close, System Menu
+      // 2. Block system commands: Minimize, Restore (unmaximize), Maximize, Move/Drag, Resize, Close
       case WM_SYSCOMMAND: {
         WPARAM sysCmd = (wparam & 0xFFF0);
         if (sysCmd == SC_MINIMIZE ||
@@ -71,9 +71,13 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
             sysCmd == SC_MAXIMIZE ||
             sysCmd == SC_MOVE ||
             sysCmd == SC_SIZE ||
-            sysCmd == SC_CLOSE ||
-            sysCmd == SC_KEYMENU) {
+            sysCmd == SC_CLOSE) {
           return 0; // Deny system command completely
+        }
+        // Block Alt+Space system menu popup (lparam == ' '),
+        // but ALLOW normal menu bar access (clicking "Utilities" or pressing Alt/F10 for HMENU)
+        if (sysCmd == SC_KEYMENU && lparam == ' ') {
+          return 0;
         }
         break;
       }

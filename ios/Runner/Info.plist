@@ -26,6 +26,10 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>ARA Mobile memerlukan akses kamera untuk proctoring selama asesmen.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>ARA Mobile memerlukan akses mikrofon untuk proctoring selama asesmen.</string>
 	<key>LSApplicationQueriesSchemes</key>
 	<array>
 		<string>ms-word</string>

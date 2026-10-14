@@ -27,6 +27,15 @@ Aplikasi wrapper cross-platform (Windows Desktop, macOS, Android, iOS) untuk por
    - Mendeteksi route ujian (`/ujian`, `/assessment`, `/exam`, `/soal`, `/essay`) dan halaman selesai (`/selesai`, `/dashboard`, `/login`) secara otomatis melalui URL dan DOM Mutation Observer.
    - **Shortcut Pengawas / Debugger**: Tekan `Ctrl + Shift + F12` atau `Alt + F12` (atau double-tap badge status) untuk membuka dialog kontrol manual pengawas (mengubah mode ke Normal, Strict, atau Essay, serta reload web).
 
+6. **Mobile (Android & iOS): WebView + Word, Excel, PowerPoint**:
+   - Menu **Utilities** di top bar membuka Microsoft Word / Excel / PowerPoint (fallback ke Play Store / App Store bila belum terinstal).
+   - Link atau unduhan dokumen `.doc/.docx/.xls/.xlsx/.ppt/.pptx` dari portal otomatis diunduh (dengan cookie sesi login) lalu dibuka di aplikasi Office yang sesuai.
+     - **Android**: langsung terbuka di aplikasi Office (via `FileProvider`).
+     - **iOS**: muncul lembar **"Open in…"** sistem, pilih Word/Excel/PowerPoint (batasan iOS: aplikasi tidak bisa memilih aplikasi tujuan secara langsung). Bila Office belum terinstal, dokumen ditampilkan dalam pratinjau.
+   - Selama ujian, setelah Office dibuka peserta bebas berpindah ARA ⇄ Office sampai ujian selesai; berpindah ke aplikasi lain tanpa membuka Office tetap tercatat sebagai pelanggaran.
+   - Selama ujian hanya dokumen Office yang boleh dibuka; link `tel:`/`mailto:`/aplikasi lain diblokir.
+   - iOS: kamera/mikrofon proctoring memerlukan `NSCameraUsageDescription` & `NSMicrophoneUsageDescription` di `Info.plist` (sudah dikonfigurasi). Gesture swipe-back WebView dinonaktifkan.
+
 ---
 
 ## 🛠️ Prasyarat & Lingkungan
@@ -69,6 +78,16 @@ fvm flutter build windows --release
 Hasil build akan berada di:  
 `build/windows/x64/runner/Release/`
 
+### 6. Build iOS (wajib di Mac)
+iOS tidak dapat di-build dari Windows. Di Mac (Xcode terinstal), project memakai Swift Package Manager:
+```bash
+fvm flutter build ios --no-codesign
+# atau jalankan di iPhone:
+fvm flutter run -d <id-iphone>
+```
+Setelah mengubah key izin di `Info.plist`, hapus cache Xcode sekali agar `permission_handler` membaca ulang izin:
+`rm -rf ~/Library/Developer/Xcode/DerivedData`
+
 ---
 
 ## 📂 Struktur Proyek
@@ -77,12 +96,20 @@ Hasil build akan berada di:
 lib/
 ├── main.dart                          # Inisialisasi WindowManager, KioskService, & Root Theme
 ├── services/
-│   ├── kiosk_security_service.dart    # Win32 Watchdog & Enforcer (Strict vs Essay Whitelist)
-│   └── assessment_detector.dart       # Detektor URL route, DOM observer, & JS Bridge
+│   ├── kiosk_security_service.dart    # Win32 Watchdog & Enforcer + Mobile lifecycle / Office session
+│   ├── assessment_detector.dart       # Detektor URL route, DOM observer, & JS Bridge
+│   ├── office_launcher_service.dart   # Membuka Word/Excel/PowerPoint (Windows, macOS, Android, iOS)
+│   └── office_document_service.dart   # Unduh dokumen portal (cookie sesi) & buka di aplikasi Office (mobile)
 └── ui/
     └── webview_screen.dart            # InAppWebView full-bleed, auto-grant kamera, dialog pengawas
+android/app/src/main/kotlin/.../
+├── MainActivity.kt                    # Channel ara_desktop/mobile_kiosk (FLAG_SECURE, launchPackage, openDocument)
+└── AraDocumentFileProvider.kt         # FileProvider untuk berbagi dokumen ke aplikasi Office
+ios/Runner/AppDelegate.swift           # AraMobileKioskPlugin: openDocument via "Open in…" sheet
 test/
-└── widget_test.dart                   # Unit test suite untuk KioskSecurityService & AssessmentDetector
+├── widget_test.dart                   # Unit test suite untuk KioskSecurityService & AssessmentDetector
+├── kiosk_security_policy_test.dart    # Kebijakan watchdog & lifecycle sesi Office mobile
+└── office_document_service_test.dart  # Deteksi jenis dokumen, nama file, & MIME
 ```
 
 ---

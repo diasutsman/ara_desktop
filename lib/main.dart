@@ -59,6 +59,26 @@ class AraAssessmentApp extends StatelessWidget {
           primary: Color(0xFF00AEF0),
           surface: Colors.white,
         ),
+        tooltipTheme: TooltipThemeData(
+          decoration: BoxDecoration(
+            color: const Color(0xFF1E1E1E),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: Colors.white24, width: 1),
+            boxShadow: const [
+              BoxShadow(
+                color: Colors.black54,
+                blurRadius: 6,
+                offset: Offset(0, 2),
+              ),
+            ],
+          ),
+          textStyle: const TextStyle(
+            color: Colors.white,
+            fontSize: 12,
+            fontWeight: FontWeight.w500,
+          ),
+          waitDuration: const Duration(milliseconds: 300),
+        ),
         useMaterial3: true,
       ),
       home: const WebViewScreen(),

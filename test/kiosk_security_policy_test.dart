@@ -333,9 +333,40 @@ void main() {
         expect(service.violationCount, equals(0));
         expect(service.securityAlertNotifier.value, isNull);
 
-        // Returning to app clears the office session
+        // Returning to the app keeps the Office session for the rest of the exam
         service.handleAppLifecycleChange(AppLifecycleState.resumed);
+        expect(service.isOfficeSessionActive, isTrue);
+      });
+
+      test('Switching back and forth between ARA and Office multiple times records no violation', () {
+        service.currentMode = AssessmentMode.exam;
+        service.violationCount = 0;
+        service.securityAlertNotifier.value = null;
+        service.markOfficeSessionStarted();
+
+        for (var i = 0; i < 3; i++) {
+          service.handleAppLifecycleChange(AppLifecycleState.paused);
+          service.handleAppLifecycleChange(AppLifecycleState.resumed);
+        }
+
+        expect(service.violationCount, equals(0));
+        expect(service.securityAlertNotifier.value, isNull);
+        expect(service.isOfficeSessionActive, isTrue);
+      });
+
+      test('Returning to Normal mode ends the Office session', () {
+        service.currentMode = AssessmentMode.exam;
+        service.markOfficeSessionStarted();
+        expect(service.isOfficeSessionActive, isTrue);
+
+        service.currentMode = AssessmentMode.normal;
         expect(service.isOfficeSessionActive, isFalse);
+
+        // A new exam without opening Office again is strict again
+        service.currentMode = AssessmentMode.exam;
+        service.violationCount = 0;
+        service.handleAppLifecycleChange(AppLifecycleState.paused);
+        expect(service.violationCount, equals(1));
       });
 
       test('Leaving app in Normal mode records no violation', () {

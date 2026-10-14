@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Only the portal document cache (path_provider getTemporaryDirectory() == cacheDir) is shared. -->
+<paths>
+    <cache-path name="ara_documents" path="ara_documents/" />
+</paths>

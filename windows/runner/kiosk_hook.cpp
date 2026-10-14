@@ -65,6 +65,15 @@ typedef struct tagUAHMEASUREMENUITEM {
   UAHMENU um;
   UAHMENUITEM umi;
 } UAHMEASUREMENUITEM;
+#ifndef MENU_BARITEM
+#define MENU_BARITEM 8
+#endif
+#ifndef MBI_NORMAL
+#define MBI_NORMAL 1
+#define MBI_HOT 2
+#define MBI_PUSHED 3
+#define MBI_DISABLED 4
+#endif
 #endif
 
 // The window titlebar color sampled from Windows 10/11 dark titlebar (#2B2B2B)
@@ -75,6 +84,8 @@ constexpr COLORREF kItemPressedColor = RGB(80, 80, 80);
 constexpr COLORREF kItemPressedBorder = RGB(95, 95, 95);
 constexpr COLORREF kTextColor = RGB(245, 245, 245);
 constexpr COLORREF kDisabledTextColor = RGB(130, 130, 130);
+
+static HTHEME s_menuTheme = nullptr;
 
 enum PreferredAppMode {
   Default,
@@ -87,10 +98,13 @@ enum PreferredAppMode {
 using fnSetPreferredAppMode = PreferredAppMode (WINAPI *)(PreferredAppMode appMode);
 using fnAllowDarkModeForWindow = BOOL (WINAPI *)(HWND hWnd, BOOL allow);
 using fnFlushMenuThemes = void (WINAPI *)();
-using fnSetWindowTheme = HRESULT (WINAPI *)(HWND hwnd, LPCWSTR pszSubAppName, LPCWSTR pszSubIdList);
 
 void InitializeWindowDarkMode(HWND hwnd) {
   if (hwnd == nullptr || !::IsWindow(hwnd)) return;
+
+  static bool s_isInitializingTheme = false;
+  if (s_isInitializingTheme) return;
+  s_isInitializingTheme = true;
 
   // 1. DWM Immersive Dark Mode for window title bar (attribute 20)
   BOOL darkMode = TRUE;
@@ -130,12 +144,11 @@ void InitializeWindowDarkMode(HWND hwnd) {
       pfnFlushMenuThemes();
     }
 
-    auto pfnSetWindowTheme = reinterpret_cast<fnSetWindowTheme>(
-        GetProcAddress(hUxtheme, "SetWindowTheme"));
-    if (pfnSetWindowTheme != nullptr) {
-      pfnSetWindowTheme(hwnd, L"DarkMode_Explorer", nullptr);
-    }
+    // NOTE: DO NOT call SetWindowTheme(hwnd, L"DarkMode_Explorer", nullptr) on a window
+    // with a native HMENU! DarkMode_Explorer suppresses/hides classic Win32 menu bars!
   }
+
+  s_isInitializingTheme = false;
 }
 
 void UAHDrawMenuNCBottomLine(HWND hwnd) {
@@ -146,26 +159,22 @@ void UAHDrawMenuNCBottomLine(HWND hwnd) {
 
   RECT rcClient = { 0 };
   GetClientRect(hwnd, &rcClient);
-  POINT ptTopLeft = { rcClient.left, rcClient.top };
-  POINT ptBottomRight = { rcClient.right, rcClient.bottom };
-  ClientToScreen(hwnd, &ptTopLeft);
-  ClientToScreen(hwnd, &ptBottomRight);
+  MapWindowPoints(hwnd, nullptr, reinterpret_cast<POINT*>(&rcClient), 2);
 
   RECT rcWindow = { 0 };
   GetWindowRect(hwnd, &rcWindow);
 
-  RECT rcLine;
-  rcLine.left = ptTopLeft.x - rcWindow.left;
-  rcLine.right = ptBottomRight.x - rcWindow.left;
-  rcLine.bottom = ptTopLeft.y - rcWindow.top;
-  rcLine.top = rcLine.bottom - 1;
+  OffsetRect(&rcClient, -rcWindow.left, -rcWindow.top);
+
+  RECT rcLine = rcClient;
+  rcLine.bottom = rcLine.top;
+  rcLine.top--;
 
   if (rcLine.bottom > rcLine.top && rcLine.top >= 0) {
     HDC hdc = GetWindowDC(hwnd);
     if (hdc != nullptr) {
-      HBRUSH hbr = CreateSolidBrush(kWindowBarColor);
-      FillRect(hdc, &rcLine, hbr);
-      DeleteObject(hbr);
+      static HBRUSH s_barBrush = CreateSolidBrush(kWindowBarColor);
+      FillRect(hdc, &rcLine, s_barBrush);
       ReleaseDC(hwnd, hdc);
     }
   }
@@ -244,17 +253,38 @@ void SetWindowControlsLocked(bool locked) {
 
   if (g_mainWindowHandle != nullptr && ::IsWindow(g_mainWindowHandle)) {
     LONG_PTR style = ::GetWindowLongPtr(g_mainWindowHandle, GWL_STYLE);
+    // Ensure WS_SYSMENU is always present so the native menu bar remains active and visible!
+    style |= WS_SYSMENU;
+
     if (locked) {
-      // Remove minimize, maximize, and system menu (close) natively from OS title bar
-      style &= ~WS_SYSMENU;
+      // Remove minimize and maximize buttons natively from OS title bar.
       style &= ~WS_MINIMIZEBOX;
       style &= ~WS_MAXIMIZEBOX;
     } else {
-      style |= (WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX);
+      style |= (WS_MINIMIZEBOX | WS_MAXIMIZEBOX);
     }
     ::SetWindowLongPtr(g_mainWindowHandle, GWL_STYLE, style);
+
+    // Disable the System Menu's Close item natively so 'X' is grayed out/disabled
+    HMENU hSysMenu = ::GetSystemMenu(g_mainWindowHandle, FALSE);
+    if (hSysMenu != nullptr) {
+      if (locked) {
+        ::EnableMenuItem(hSysMenu, SC_CLOSE, MF_BYCOMMAND | MF_DISABLED | MF_GRAYED);
+      } else {
+        ::EnableMenuItem(hSysMenu, SC_CLOSE, MF_BYCOMMAND | MF_ENABLED);
+      }
+    }
+
+    // Ensure native HMENU is attached if it was ever missing
+    if (::GetMenu(g_mainWindowHandle) == nullptr) {
+      AttachNativeMenuBar(g_mainWindowHandle);
+    }
+
     ::SetWindowPos(g_mainWindowHandle, nullptr, 0, 0, 0, 0,
                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+
+    InitializeWindowDarkMode(g_mainWindowHandle);
+    ::DrawMenuBar(g_mainWindowHandle);
   }
 }
 
@@ -265,28 +295,24 @@ void AttachNativeMenuBar(HWND hwnd) {
   if (hExistingMenu != nullptr) return; // Already attached
 
   HMENU hMenuBar = ::CreateMenu();
-  HMENU hUtilities = ::CreatePopupMenu();
 
-  ::AppendMenuW(hUtilities, MF_STRING, ID_MENU_WORD, L"Microsoft Word");
-  ::AppendMenuW(hUtilities, MF_STRING, ID_MENU_EXCEL, L"Microsoft Excel");
-  ::AppendMenuW(hUtilities, MF_STRING, ID_MENU_POWERPOINT, L"Microsoft PowerPoint");
+  ::AppendMenuW(hMenuBar, MF_STRING, ID_MENU_WORD, L"Word");
+  ::AppendMenuW(hMenuBar, MF_STRING, ID_MENU_EXCEL, L"Excel");
+  ::AppendMenuW(hMenuBar, MF_STRING, ID_MENU_POWERPOINT, L"PowerPoint");
 
-  ::AppendMenuW(hMenuBar, MF_POPUP, reinterpret_cast<UINT_PTR>(hUtilities), L"Utilities");
-
-  // Apply dark background brush to menu and submenus
+  // Apply dark background brush to menu
   static HBRUSH s_menuBrush = CreateSolidBrush(kWindowBarColor);
   MENUINFO mi = { sizeof(MENUINFO) };
   mi.cbSize = sizeof(MENUINFO);
   mi.fMask = MIM_BACKGROUND | MIM_APPLYTOSUBMENUS;
   mi.hbrBack = s_menuBrush;
   ::SetMenuInfo(hMenuBar, &mi);
-  ::SetMenuInfo(hUtilities, &mi);
 
   ::SetMenu(hwnd, hMenuBar);
   ::DrawMenuBar(hwnd);
 
   InitializeWindowDarkMode(hwnd);
-  std::cout << "[KioskHook] Native Win32 Menu Bar attached with matching Window Dark Color to HWND: " << hwnd << std::endl;
+  std::cout << "[KioskHook] Native Win32 Menu Bar attached (Word, Excel, PowerPoint) to HWND: " << hwnd << std::endl;
 }
 
 bool HandleNativeMenuBarMessage(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, LRESULT* result) {
@@ -298,18 +324,21 @@ bool HandleNativeMenuBarMessage(HWND hwnd, UINT message, WPARAM wparam, LPARAM l
     case WM_UAHDRAWMENU: {
       UAHMENU* pUDM = reinterpret_cast<UAHMENU*>(lparam);
       if (pUDM != nullptr) {
+        RECT rcWindow = { 0 };
+        GetWindowRect(hwnd, &rcWindow);
+
         MENUBARINFO mbi = { sizeof(mbi) };
-        if (GetMenuBarInfo(hwnd, OBJID_MENU, 0, &mbi)) {
-          RECT rcWindow = { 0 };
-          GetWindowRect(hwnd, &rcWindow);
+        GetMenuBarInfo(hwnd, OBJID_MENU, 0, &mbi);
 
-          RECT rc = mbi.rcBar;
-          OffsetRect(&rc, -rcWindow.left, -rcWindow.top);
+        RECT rc = mbi.rcBar;
+        OffsetRect(&rc, -rcWindow.left, -rcWindow.top);
 
-          HBRUSH hbr = CreateSolidBrush(kWindowBarColor);
-          FillRect(pUDM->hdc, &rc, hbr);
-          DeleteObject(hbr);
-        }
+        // Bentangkan rc ke seluruh lebar jendela agar tidak ada strip putih default Windows
+        rc.left = 0;
+        rc.right = rcWindow.right - rcWindow.left;
+
+        static HBRUSH s_barBrush = CreateSolidBrush(kWindowBarColor);
+        FillRect(pUDM->hdc, &rc, s_barBrush);
       }
       *result = 0;
       return true;
@@ -318,35 +347,45 @@ bool HandleNativeMenuBarMessage(HWND hwnd, UINT message, WPARAM wparam, LPARAM l
     case WM_UAHDRAWMENUITEM: {
       UAHDRAWMENUITEM* pUDMI = reinterpret_cast<UAHDRAWMENUITEM*>(lparam);
       if (pUDMI != nullptr) {
-        COLORREF bgColor = kWindowBarColor;
-        COLORREF borderColor = kWindowBarColor;
-        COLORREF textColor = kTextColor;
+        static HBRUSH s_itemBg = CreateSolidBrush(kWindowBarColor);
+        static HBRUSH s_itemHot = CreateSolidBrush(kItemHoverColor);
+        static HBRUSH s_itemSelected = CreateSolidBrush(kItemPressedColor);
+        static HBRUSH s_borderHot = CreateSolidBrush(kItemHoverBorder);
+        static HBRUSH s_borderSelected = CreateSolidBrush(kItemPressedBorder);
+
+        HBRUSH hbrBg = s_itemBg;
+        HBRUSH hbrBorder = s_itemBg;
+        int iTextStateID = MBI_NORMAL;
 
         if (pUDMI->dis.itemState & ODS_SELECTED) {
-          bgColor = kItemPressedColor;
-          borderColor = kItemPressedBorder;
+          hbrBg = s_itemSelected;
+          hbrBorder = s_borderSelected;
+          iTextStateID = MBI_PUSHED;
         } else if (pUDMI->dis.itemState & ODS_HOTLIGHT) {
-          bgColor = kItemHoverColor;
-          borderColor = kItemHoverBorder;
+          hbrBg = s_itemHot;
+          hbrBorder = s_borderHot;
+          iTextStateID = MBI_HOT;
         } else if ((pUDMI->dis.itemState & ODS_GRAYED) || (pUDMI->dis.itemState & ODS_DISABLED)) {
-          textColor = kDisabledTextColor;
+          iTextStateID = MBI_DISABLED;
         }
 
-        HBRUSH hbrBg = CreateSolidBrush(bgColor);
         FillRect(pUDMI->um.hdc, &pUDMI->dis.rcItem, hbrBg);
-        DeleteObject(hbrBg);
-
         if ((pUDMI->dis.itemState & ODS_HOTLIGHT) || (pUDMI->dis.itemState & ODS_SELECTED)) {
-          HBRUSH hbrBorder = CreateSolidBrush(borderColor);
           FrameRect(pUDMI->um.hdc, &pUDMI->dis.rcItem, hbrBorder);
-          DeleteObject(hbrBorder);
         }
 
         wchar_t menuString[256] = { 0 };
-        int len = GetMenuStringW(pUDMI->um.hmenu, pUDMI->umi.iPosition, menuString, 255, MF_BYPOSITION);
+        int len = ::GetMenuStringW(pUDMI->um.hmenu, pUDMI->umi.iPosition, menuString, 255, MF_BYPOSITION);
         if (len <= 0) {
-          wcscpy_s(menuString, L"Utilities");
-          len = static_cast<int>(wcslen(menuString));
+          MENUITEMINFO mii = { sizeof(mii), MIIM_STRING };
+          mii.dwTypeData = menuString;
+          mii.cch = 255;
+          if (GetMenuItemInfoW(pUDMI->um.hmenu, pUDMI->umi.iPosition, TRUE, &mii) && mii.cch > 0) {
+            len = static_cast<int>(mii.cch);
+          } else {
+            wcscpy_s(menuString, L"Item");
+            len = static_cast<int>(wcslen(menuString));
+          }
         }
 
         DWORD dwFlags = DT_CENTER | DT_SINGLELINE | DT_VCENTER;
@@ -354,20 +393,25 @@ bool HandleNativeMenuBarMessage(HWND hwnd, UINT message, WPARAM wparam, LPARAM l
           dwFlags |= DT_HIDEPREFIX;
         }
 
-        int oldBkMode = SetBkMode(pUDMI->um.hdc, TRANSPARENT);
-        COLORREF oldTextColor = SetTextColor(pUDMI->um.hdc, textColor);
+        if (!s_menuTheme) {
+          s_menuTheme = OpenThemeData(hwnd, L"Menu");
+        }
 
-        NONCLIENTMETRICSW ncm = { sizeof(NONCLIENTMETRICSW) };
-        SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(NONCLIENTMETRICSW), &ncm, 0);
-        HFONT hFont = CreateFontIndirectW(&ncm.lfMenuFont);
-        HFONT oldFont = static_cast<HFONT>(SelectObject(pUDMI->um.hdc, hFont));
+        COLORREF textColor = (iTextStateID == MBI_DISABLED) ? kDisabledTextColor : kTextColor;
+        DTTOPTS opts = { sizeof(opts) };
+        opts.dwFlags = DTT_TEXTCOLOR;
+        opts.crText = textColor;
 
-        DrawTextW(pUDMI->um.hdc, menuString, len, &pUDMI->dis.rcItem, dwFlags);
-
-        SelectObject(pUDMI->um.hdc, oldFont);
-        DeleteObject(hFont);
-        SetTextColor(pUDMI->um.hdc, oldTextColor);
-        SetBkMode(pUDMI->um.hdc, oldBkMode);
+        if (s_menuTheme != nullptr) {
+          DrawThemeTextEx(s_menuTheme, pUDMI->um.hdc, MENU_BARITEM, iTextStateID,
+                          menuString, len, dwFlags, &pUDMI->dis.rcItem, &opts);
+        } else {
+          int oldBkMode = SetBkMode(pUDMI->um.hdc, TRANSPARENT);
+          COLORREF oldTextColor = SetTextColor(pUDMI->um.hdc, textColor);
+          DrawTextW(pUDMI->um.hdc, menuString, len, &pUDMI->dis.rcItem, dwFlags);
+          SetTextColor(pUDMI->um.hdc, oldTextColor);
+          SetBkMode(pUDMI->um.hdc, oldBkMode);
+        }
       }
       *result = 0;
       return true;
@@ -386,8 +430,17 @@ bool HandleNativeMenuBarMessage(HWND hwnd, UINT message, WPARAM wparam, LPARAM l
     }
 
     case WM_THEMECHANGED: {
-      InitializeWindowDarkMode(hwnd);
-      DrawMenuBar(hwnd);
+      static bool s_inThemeChanged = false;
+      if (!s_inThemeChanged) {
+        s_inThemeChanged = true;
+        if (s_menuTheme != nullptr) {
+          CloseThemeData(s_menuTheme);
+          s_menuTheme = nullptr;
+        }
+        InitializeWindowDarkMode(hwnd);
+        DrawMenuBar(hwnd);
+        s_inThemeChanged = false;
+      }
       return false;
     }
 
@@ -405,6 +458,10 @@ void NotifyOfficeAppLaunched(const std::string& appName) {
 }
 
 void CleanupKioskHook() {
+  if (s_menuTheme != nullptr) {
+    CloseThemeData(s_menuTheme);
+    s_menuTheme = nullptr;
+  }
   SetKioskHookEnabled(false);
   SetWindowControlsLocked(false);
   g_kioskChannel = nullptr;

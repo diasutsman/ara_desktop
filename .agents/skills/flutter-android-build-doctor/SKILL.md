@@ -114,3 +114,23 @@ In `android/gradle.properties`, disable Kotlin incremental compilation:
 ```properties
 kotlin.incremental=false
 ```
+
+---
+
+## 6. Kotlin DSL Script Fails With "Unresolved reference 'android'" on Every Line
+
+### Symptom
+```
+build.gradle.kts:7:1: Unresolved reference 'android'.
+build.gradle.kts:53:5: Unresolved reference 'implementation'.
+```
+Every accessor (`namespace`, `flutter`, `compileSdk`, `implementation`, ...) is unresolved right after editing `android/app/build.gradle.kts`.
+
+### Cause
+In this project (AGP 9.1, `android.newDsl=false`, `android.builtInKotlin=false`) adding a top-level
+`dependencies { implementation(...) }` block to the app script breaks type-safe accessor generation.
+
+### Resolution
+1. Remove the `dependencies {}` block and rebuild to confirm.
+2. Prefer libraries already on the classpath: `androidx.core` (e.g. `FileProvider`) comes transitively via the Flutter embedding, so no explicit dependency is needed.
+3. Treat PowerShell exit code 1 together with a `√ Built ...` line as success: stderr warnings (`SDK XML version`, CMake `CMP0175`) trigger `NativeCommandError`.
