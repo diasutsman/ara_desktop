@@ -27,6 +27,7 @@ void CleanupKioskHook();
 constexpr UINT ID_MENU_WORD = 1001;
 constexpr UINT ID_MENU_EXCEL = 1002;
 constexpr UINT ID_MENU_POWERPOINT = 1003;
+constexpr UINT ID_MENU_REFRESH = 1004;
 
 // Attaches the classic Win32 native MenuStrip/MenuBar (HMENU) to the main window
 void AttachNativeMenuBar(HWND hwnd);
@@ -37,4 +38,8 @@ bool HandleNativeMenuBarMessage(HWND hwnd, UINT message, WPARAM wparam, LPARAM l
 // Notifies Dart via MethodChannel that an Office app was triggered
 void NotifyOfficeAppLaunched(const std::string& appName);
 
+// Notifies Dart via MethodChannel that refresh was requested
+void NotifyRefreshRequested();
+
 #endif  // RUNNER_KIOSK_HOOK_H_
+

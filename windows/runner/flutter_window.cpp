@@ -117,8 +117,12 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
       ::ShellExecuteW(nullptr, L"open", L"powerpnt.exe", nullptr, nullptr, SW_SHOWNORMAL);
       NotifyOfficeAppLaunched("powerpnt");
       return 0;
+    } else if (id == ID_MENU_REFRESH) {
+      NotifyRefreshRequested();
+      return 0;
     }
   }
+
 
   // Handle Native Win32 MenuBar Dark Theme Rendering
   LRESULT menuResult = 0;

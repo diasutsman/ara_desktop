@@ -152,21 +152,18 @@ void InitializeWindowDarkMode(HWND hwnd) {
 }
 
 void UAHDrawMenuNCBottomLine(HWND hwnd) {
-  MENUBARINFO mbi = { sizeof(mbi) };
-  if (!GetMenuBarInfo(hwnd, OBJID_MENU, 0, &mbi)) {
-    return;
-  }
+  RECT rcWindow = { 0 };
+  if (!GetWindowRect(hwnd, &rcWindow)) return;
 
   RECT rcClient = { 0 };
   GetClientRect(hwnd, &rcClient);
   MapWindowPoints(hwnd, nullptr, reinterpret_cast<POINT*>(&rcClient), 2);
 
-  RECT rcWindow = { 0 };
-  GetWindowRect(hwnd, &rcWindow);
-
   OffsetRect(&rcClient, -rcWindow.left, -rcWindow.top);
 
   RECT rcLine = rcClient;
+  rcLine.left = 0;
+  rcLine.right = rcWindow.right - rcWindow.left;
   rcLine.bottom = rcLine.top;
   rcLine.top--;
 
@@ -296,9 +293,10 @@ void AttachNativeMenuBar(HWND hwnd) {
 
   HMENU hMenuBar = ::CreateMenu();
 
-  ::AppendMenuW(hMenuBar, MF_STRING, ID_MENU_WORD, L"Word");
-  ::AppendMenuW(hMenuBar, MF_STRING, ID_MENU_EXCEL, L"Excel");
-  ::AppendMenuW(hMenuBar, MF_STRING, ID_MENU_POWERPOINT, L"PowerPoint");
+  ::AppendMenuW(hMenuBar, MF_STRING, ID_MENU_WORD, L" Word ");
+  ::AppendMenuW(hMenuBar, MF_STRING, ID_MENU_EXCEL, L" Excel ");
+  ::AppendMenuW(hMenuBar, MF_STRING, ID_MENU_POWERPOINT, L" PowerPoint ");
+  ::AppendMenuW(hMenuBar, MF_STRING, ID_MENU_REFRESH, L" Refresh ");
 
   // Apply dark background brush to menu
   static HBRUSH s_menuBrush = CreateSolidBrush(kWindowBarColor);
@@ -323,15 +321,23 @@ bool HandleNativeMenuBarMessage(HWND hwnd, UINT message, WPARAM wparam, LPARAM l
   switch (message) {
     case WM_UAHDRAWMENU: {
       UAHMENU* pUDM = reinterpret_cast<UAHMENU*>(lparam);
-      if (pUDM != nullptr) {
+      if (pUDM != nullptr && pUDM->hdc != nullptr) {
         RECT rcWindow = { 0 };
         GetWindowRect(hwnd, &rcWindow);
 
         MENUBARINFO mbi = { sizeof(mbi) };
-        GetMenuBarInfo(hwnd, OBJID_MENU, 0, &mbi);
-
-        RECT rc = mbi.rcBar;
-        OffsetRect(&rc, -rcWindow.left, -rcWindow.top);
+        RECT rc = { 0 };
+        if (GetMenuBarInfo(hwnd, OBJID_MENU, 0, &mbi) && mbi.rcBar.bottom > mbi.rcBar.top) {
+          rc = mbi.rcBar;
+          OffsetRect(&rc, -rcWindow.left, -rcWindow.top);
+        } else {
+          RECT rcClient = { 0 };
+          GetClientRect(hwnd, &rcClient);
+          POINT ptClientTopLeft = { rcClient.left, rcClient.top };
+          ClientToScreen(hwnd, &ptClientTopLeft);
+          rc.top = ptClientTopLeft.y - rcWindow.top - GetSystemMetrics(SM_CYMENU);
+          rc.bottom = ptClientTopLeft.y - rcWindow.top;
+        }
 
         // Bentangkan rc ke seluruh lebar jendela agar tidak ada strip putih default Windows
         rc.left = 0;
@@ -355,63 +361,88 @@ bool HandleNativeMenuBarMessage(HWND hwnd, UINT message, WPARAM wparam, LPARAM l
 
         HBRUSH hbrBg = s_itemBg;
         HBRUSH hbrBorder = s_itemBg;
-        int iTextStateID = MBI_NORMAL;
+        COLORREF textColor = kTextColor;
 
         if (pUDMI->dis.itemState & ODS_SELECTED) {
           hbrBg = s_itemSelected;
           hbrBorder = s_borderSelected;
-          iTextStateID = MBI_PUSHED;
+          textColor = RGB(255, 255, 255);
         } else if (pUDMI->dis.itemState & ODS_HOTLIGHT) {
           hbrBg = s_itemHot;
           hbrBorder = s_borderHot;
-          iTextStateID = MBI_HOT;
+          textColor = RGB(255, 255, 255);
         } else if ((pUDMI->dis.itemState & ODS_GRAYED) || (pUDMI->dis.itemState & ODS_DISABLED)) {
-          iTextStateID = MBI_DISABLED;
+          textColor = kDisabledTextColor;
         }
 
-        FillRect(pUDMI->um.hdc, &pUDMI->dis.rcItem, hbrBg);
-        if ((pUDMI->dis.itemState & ODS_HOTLIGHT) || (pUDMI->dis.itemState & ODS_SELECTED)) {
-          FrameRect(pUDMI->um.hdc, &pUDMI->dis.rcItem, hbrBorder);
+        // Draw background to both dis.hDC and um.hdc
+        if (pUDMI->dis.hDC != nullptr) {
+          FillRect(pUDMI->dis.hDC, &pUDMI->dis.rcItem, hbrBg);
+          if ((pUDMI->dis.itemState & ODS_HOTLIGHT) || (pUDMI->dis.itemState & ODS_SELECTED)) {
+            FrameRect(pUDMI->dis.hDC, &pUDMI->dis.rcItem, hbrBorder);
+          }
         }
-
-        wchar_t menuString[256] = { 0 };
-        int len = ::GetMenuStringW(pUDMI->um.hmenu, pUDMI->umi.iPosition, menuString, 255, MF_BYPOSITION);
-        if (len <= 0) {
-          MENUITEMINFO mii = { sizeof(mii), MIIM_STRING };
-          mii.dwTypeData = menuString;
-          mii.cch = 255;
-          if (GetMenuItemInfoW(pUDMI->um.hmenu, pUDMI->umi.iPosition, TRUE, &mii) && mii.cch > 0) {
-            len = static_cast<int>(mii.cch);
-          } else {
-            wcscpy_s(menuString, L"Item");
-            len = static_cast<int>(wcslen(menuString));
+        if (pUDMI->um.hdc != nullptr && pUDMI->um.hdc != pUDMI->dis.hDC) {
+          FillRect(pUDMI->um.hdc, &pUDMI->dis.rcItem, hbrBg);
+          if ((pUDMI->dis.itemState & ODS_HOTLIGHT) || (pUDMI->dis.itemState & ODS_SELECTED)) {
+            FrameRect(pUDMI->um.hdc, &pUDMI->dis.rcItem, hbrBorder);
           }
         }
 
-        DWORD dwFlags = DT_CENTER | DT_SINGLELINE | DT_VCENTER;
-        if (pUDMI->dis.itemState & ODS_NOACCEL) {
-          dwFlags |= DT_HIDEPREFIX;
+        // Retrieve menu item string
+        wchar_t menuString[256] = { 0 };
+        HMENU hMenu = (pUDMI->um.hmenu != nullptr) ? pUDMI->um.hmenu : ::GetMenu(hwnd);
+        int len = 0;
+        if (hMenu != nullptr) {
+          len = ::GetMenuStringW(hMenu, pUDMI->umi.iPosition, menuString, 255, MF_BYPOSITION);
+          if (len <= 0) {
+            MENUITEMINFO mii = { sizeof(mii) };
+            mii.fMask = MIIM_STRING;
+            mii.dwTypeData = menuString;
+            mii.cch = 255;
+            if (GetMenuItemInfoW(hMenu, pUDMI->umi.iPosition, TRUE, &mii) && mii.cch > 0) {
+              len = static_cast<int>(mii.cch);
+            }
+          }
         }
 
-        if (!s_menuTheme) {
-          s_menuTheme = OpenThemeData(hwnd, L"Menu");
+        if (len <= 0) {
+          if (pUDMI->umi.iPosition == 0) wcscpy_s(menuString, L" Word ");
+          else if (pUDMI->umi.iPosition == 1) wcscpy_s(menuString, L" Excel ");
+          else if (pUDMI->umi.iPosition == 2) wcscpy_s(menuString, L" PowerPoint ");
+          else if (pUDMI->umi.iPosition == 3) wcscpy_s(menuString, L" Refresh ");
+          else wcscpy_s(menuString, L" Item ");
+          len = static_cast<int>(wcslen(menuString));
         }
 
-        COLORREF textColor = (iTextStateID == MBI_DISABLED) ? kDisabledTextColor : kTextColor;
-        DTTOPTS opts = { sizeof(opts) };
-        opts.dwFlags = DTT_TEXTCOLOR;
-        opts.crText = textColor;
+        DWORD dwFlags = DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX;
 
-        if (s_menuTheme != nullptr) {
-          DrawThemeTextEx(s_menuTheme, pUDMI->um.hdc, MENU_BARITEM, iTextStateID,
-                          menuString, len, dwFlags, &pUDMI->dis.rcItem, &opts);
-        } else {
-          int oldBkMode = SetBkMode(pUDMI->um.hdc, TRANSPARENT);
-          COLORREF oldTextColor = SetTextColor(pUDMI->um.hdc, textColor);
-          DrawTextW(pUDMI->um.hdc, menuString, len, &pUDMI->dis.rcItem, dwFlags);
-          SetTextColor(pUDMI->um.hdc, oldTextColor);
-          SetBkMode(pUDMI->um.hdc, oldBkMode);
+        NONCLIENTMETRICSW ncm = { sizeof(NONCLIENTMETRICSW) };
+        SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(NONCLIENTMETRICSW), &ncm, 0);
+        ncm.lfMenuFont.lfWeight = FW_SEMIBOLD;
+        HFONT hFont = CreateFontIndirectW(&ncm.lfMenuFont);
+
+        auto drawTextToDc = [&](HDC dc) {
+          if (dc == nullptr) return;
+          HFONT oldFont = static_cast<HFONT>(SelectObject(dc, hFont));
+          int oldBkMode = SetBkMode(dc, TRANSPARENT);
+          COLORREF oldTextColor = SetTextColor(dc, textColor);
+
+          DrawTextW(dc, menuString, len, &pUDMI->dis.rcItem, dwFlags);
+
+          SetTextColor(dc, oldTextColor);
+          SetBkMode(dc, oldBkMode);
+          SelectObject(dc, oldFont);
+        };
+
+        if (pUDMI->dis.hDC != nullptr) {
+          drawTextToDc(pUDMI->dis.hDC);
         }
+        if (pUDMI->um.hdc != nullptr && pUDMI->um.hdc != pUDMI->dis.hDC) {
+          drawTextToDc(pUDMI->um.hdc);
+        }
+
+        DeleteObject(hFont);
       }
       *result = 0;
       return true;
@@ -454,6 +485,12 @@ void NotifyOfficeAppLaunched(const std::string& appName) {
     g_kioskChannel->InvokeMethod(
         "onOfficeLaunched",
         std::make_unique<flutter::EncodableValue>(appName));
+  }
+}
+
+void NotifyRefreshRequested() {
+  if (g_kioskChannel != nullptr) {
+    g_kioskChannel->InvokeMethod("onRefreshRequested", nullptr);
   }
 }
 

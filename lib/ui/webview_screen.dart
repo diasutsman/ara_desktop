@@ -57,6 +57,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
     WidgetsBinding.instance.addObserver(this);
     _requestInitialPermissions();
     _detector.onSupervisorRequested = _showSupervisorDialog;
+    _kioskService.onRefreshRequested = _handleRefresh;
     HardwareKeyboard.instance.addHandler(_handleGlobalKeyEvent);
     if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       windowManager.addListener(this);
@@ -69,10 +70,21 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
     if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       windowManager.removeListener(this);
     }
+    _kioskService.onRefreshRequested = null;
     HardwareKeyboard.instance.removeHandler(_handleGlobalKeyEvent);
     _detector.onSupervisorRequested = null;
     _keyboardFocusNode.dispose();
     super.dispose();
+  }
+
+  void _handleRefresh() {
+    if (!mounted) return;
+    debugPrint('[WebViewScreen] Refreshing page...');
+    setState(() {
+      _hasError = false;
+      _isLoading = true;
+    });
+    _webViewController?.reload();
   }
 
   @override
@@ -93,6 +105,13 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
 
   bool _handleGlobalKeyEvent(KeyEvent event) {
     if (event is KeyDownEvent) {
+      // Refresh hotkeys: F5 or Ctrl+R
+      if (event.logicalKey == LogicalKeyboardKey.f5 ||
+          (HardwareKeyboard.instance.isControlPressed && event.logicalKey == LogicalKeyboardKey.keyR)) {
+        _handleRefresh();
+        return true;
+      }
+
       // Dev exit hotkeys: Escape or Ctrl+Q
       if (_kioskService.isDevMode) {
         if (event.logicalKey == LogicalKeyboardKey.escape ||
@@ -497,7 +516,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
             // Main Webview
             InAppWebView(
                     initialUrlRequest: URLRequest(
-                      url: WebUri('https://ara-assessment.com/assess/login'),
+                      url: WebUri('http://localhost/new_ara'),
                     ),
               initialSettings: InAppWebViewSettings(
                 javaScriptEnabled: true,
@@ -746,59 +765,102 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
               ),
             ),
 
-            // Discreet Active Mode Badge or Window Controls (Top-Right)
-            Positioned(
-              top: 8,
-              right: 8,
-              child: ValueListenableBuilder<AssessmentMode>(
-                valueListenable: _kioskService.modeNotifier,
-                builder: (context, mode, _) {
-                  if (mode != AssessmentMode.normal && !_isMobile) {
-                    return Tooltip(
-                      message: 'Mode Ujian Aktif: Akses Word, Excel & PPT via Menu Utilities',
-                      child: GestureDetector(
-                        onDoubleTap: _showSupervisorDialog,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                          decoration: BoxDecoration(
-                            color: Colors.red.shade900.withValues(alpha: 0.85),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                              color: Colors.redAccent,
-                              width: 1,
+            // Top-Right Floating Bar: Refresh Button & Active Mode Badge (Desktop)
+            if (!_isMobile)
+              Positioned(
+                top: 8,
+                right: 8,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Floating Refresh Button
+                    Tooltip(
+                      message: 'Muat ulang halaman portal (F5 / Ctrl+R)',
+                      child: Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          onTap: _handleRefresh,
+                          borderRadius: BorderRadius.circular(8),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF1E1E2E).withValues(alpha: 0.9),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.white24, width: 1),
+                              boxShadow: const [
+                                BoxShadow(color: Colors.black45, blurRadius: 6, offset: Offset(0, 2)),
+                              ],
                             ),
-                          ),
-                          child: const Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                Icons.lock,
-                                size: 14,
-                                color: Colors.white,
-                              ),
-                              SizedBox(width: 4),
-                              Text(
-                                'MODE UJIAN AKTIF (WORD, EXCEL, PPT)',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.bold,
-                                  letterSpacing: 0.5,
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.refresh_rounded, size: 14, color: Colors.white),
+                                SizedBox(width: 5),
+                                Text(
+                                  'Refresh',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
+                                  ),
                                 ),
-                              ),
-                            ],
+                              ],
+                            ),
                           ),
                         ),
                       ),
-                    );
-                  }
+                    ),
+                    const SizedBox(width: 8),
+                    ValueListenableBuilder<AssessmentMode>(
+                      valueListenable: _kioskService.modeNotifier,
+                      builder: (context, mode, _) {
+                        if (mode != AssessmentMode.normal) {
+                          return Tooltip(
+                            message: 'Mode Ujian Aktif: Akses Word, Excel & PPT via Menu Utilities',
+                            child: GestureDetector(
+                              onDoubleTap: _showSupervisorDialog,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                decoration: BoxDecoration(
+                                  color: Colors.red.shade900.withValues(alpha: 0.85),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(
+                                    color: Colors.redAccent,
+                                    width: 1,
+                                  ),
+                                ),
+                                child: const Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(
+                                      Icons.lock,
+                                      size: 14,
+                                      color: Colors.white,
+                                    ),
+                                    SizedBox(width: 4),
+                                    Text(
+                                      'MODE UJIAN AKTIF (WORD, EXCEL, PPT)',
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.bold,
+                                        letterSpacing: 0.5,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          );
+                        }
 
-                  // Normal Mode: Gunakan kontrol jendela native bawaan Windows (minimize, maximize, close).
-                  // Tidak menampilkan tombol ganda di dalam webview.
-                  return const SizedBox.shrink();
-                },
+                        // Normal Mode: Tidak menampilkan badge mode ujian
+                        return const SizedBox.shrink();
+                      },
+                    ),
+                  ],
+                ),
               ),
-            ),
 
             // Floating Dev Mode Toolbar & Emergency Exit Button (Top-Left)
             if (_kioskService.isDevMode)
@@ -935,6 +997,17 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
             ),
           ),
           const Spacer(),
+
+          // Mobile Refresh Button
+          IconButton(
+            icon: const Icon(Icons.refresh_rounded, color: Colors.white, size: 20),
+            tooltip: 'Refresh Halaman',
+            visualDensity: VisualDensity.compact,
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+            onPressed: _handleRefresh,
+          ),
+          const SizedBox(width: 4),
 
           // Utilities Dropdown Menu
           Theme(

@@ -54,6 +54,7 @@ class KioskSecurityService with WindowListener {
 
   final ValueNotifier<AssessmentMode> modeNotifier = ValueNotifier<AssessmentMode>(AssessmentMode.normal);
   final ValueNotifier<String?> securityAlertNotifier = ValueNotifier<String?>(null);
+  VoidCallback? onRefreshRequested;
 
   bool isManualOverride = false;
   final ValueNotifier<bool> manualOverrideNotifier = ValueNotifier<bool>(false);
@@ -194,10 +195,14 @@ class KioskSecurityService with WindowListener {
           if (_currentMode == AssessmentMode.normal) {
             await setMode(AssessmentMode.exam);
           }
+        } else if (call.method == 'onRefreshRequested') {
+          debugPrint('[KioskSecurityService] Native Win32 Menu triggered refresh');
+          onRefreshRequested?.call();
         }
       });
     }
   }
+
 
   void dispose() {
     _watchdogTimer?.cancel();

@@ -40,3 +40,10 @@ target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 
 # Run the Flutter tool portions of the build. This must not be removed.
 add_dependencies(${BINARY_NAME} flutter_assemble)
+
+# Terminate existing running instance of the application to prevent file-lock during build/copy
+add_custom_command(
+  TARGET ${BINARY_NAME} PRE_BUILD
+  COMMAND cmd.exe /c "taskkill /F /IM ${BINARY_NAME}.exe >nul 2>&1 || exit 0"
+  COMMENT "Ensuring no previous ${BINARY_NAME} instance is locking output binaries..."
+)
