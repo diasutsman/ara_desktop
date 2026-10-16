@@ -134,12 +134,15 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
 
   Future<void> _requestInitialPermissions() async {
     if (!kIsWeb && (Platform.isAndroid || Platform.isIOS || Platform.isMacOS)) {
+      await _kioskService.setPermissionRequestInProgress(true);
       try {
         final cameraStatus = await Permission.camera.request();
         final micStatus = await Permission.microphone.request();
         debugPrint('[Permissions] Camera: $cameraStatus, Mic: $micStatus');
       } catch (e) {
         debugPrint('[Permissions] Error requesting hardware permissions: $e');
+      } finally {
+        await _kioskService.setPermissionRequestInProgress(false);
       }
     }
   }
@@ -475,18 +478,11 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
     return ValueListenableBuilder<AssessmentMode>(
       valueListenable: _kioskService.modeNotifier,
       builder: (context, currentMode, _) {
-        final isExam = currentMode != AssessmentMode.normal;
         return PopScope(
-          canPop: !isExam,
+          canPop: false,
           onPopInvokedWithResult: (didPop, result) {
             if (!didPop) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Tombol navigasi dinonaktifkan selama Mode Ujian.'),
-                  duration: Duration(seconds: 2),
-                  backgroundColor: Colors.red,
-                ),
-              );
+              _kioskService.handleMobileBlockedNavigation('back');
             }
           },
           child: Scaffold(
@@ -516,7 +512,11 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
             // Main Webview
             InAppWebView(
                     initialUrlRequest: URLRequest(
-                      url: WebUri('http://localhost/new_ara'),
+                      // Production base URL
+                      url: WebUri('https://ara-assessment.com/assess/login'),
+
+                      // Local testing base URL (uncomment to test localhost):
+                      // url: WebUri( !Platform.isWindows ? 'http://192.168.100.7/new_ara' : 'http://localhost/new_ara'),
                     ),
               initialSettings: InAppWebViewSettings(
                 javaScriptEnabled: true,
@@ -539,9 +539,11 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                 // Mobile-only hooks for opening portal Office documents (desktop unchanged).
                 useShouldOverrideUrlLoading: _isMobile,
                 useOnDownloadStart: _isMobile,
-                // iOS: WKWebView swipe-back bypasses PopScope, and link previews can escape to Safari.
+                // iOS & Android: prevent swipe-back/overscroll and link previews.
                 allowsBackForwardNavigationGestures: false,
                 allowsLinkPreview: false,
+                disallowOverScroll: true,
+                overScrollMode: OverScrollMode.NEVER,
               ),
               onWebViewCreated: (controller) {
                 _webViewController = controller;
@@ -1037,6 +1039,9 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
               tooltip: 'Utilities',
               offset: const Offset(0, 40),
               onSelected: (val) async {
+                if (_kioskService.currentMode == AssessmentMode.normal) {
+                  await _kioskService.setMode(AssessmentMode.exam);
+                }
                 _kioskService.markOfficeSessionStarted();
                 OfficeLaunchResult res;
                 if (val == 'word') {
@@ -1045,6 +1050,9 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                   res = await OfficeLauncherService().launchExcel();
                 } else {
                   res = await OfficeLauncherService().launchPowerPoint();
+                }
+                if (!res.success && !res.openedStore) {
+                  _kioskService.markOfficeSessionEnded();
                 }
                 _showOfficeResult(res);
               },

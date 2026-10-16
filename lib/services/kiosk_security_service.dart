@@ -47,6 +47,7 @@ class KioskSecurityService with WindowListener {
   void _applyModeState(AssessmentMode mode) {
     _currentMode = mode;
     modeNotifier.value = mode;
+    _hasRecordedCurrentPauseViolation = false;
     if (mode == AssessmentMode.normal && isOfficeSessionActive) {
       markOfficeSessionEnded();
     }
@@ -61,15 +62,45 @@ class KioskSecurityService with WindowListener {
 
   bool isOfficeSessionActive = false;
   int violationCount = 0;
+  bool _hasRecordedCurrentPauseViolation = false;
+  Timer? _alertClearTimer;
+
+  void _showSecurityAlert(String message, {Duration duration = const Duration(seconds: 3)}) {
+    securityAlertNotifier.value = message;
+    _alertClearTimer?.cancel();
+    _alertClearTimer = Timer(duration, () {
+      if (securityAlertNotifier.value == message) {
+        securityAlertNotifier.value = null;
+      }
+    });
+  }
 
   void markOfficeSessionStarted() {
     isOfficeSessionActive = true;
     debugPrint('[KioskSecurityService] Office Session Started - App switching allowed for Office.');
+    _syncMobileOfficeSession(true);
   }
 
   void markOfficeSessionEnded() {
     isOfficeSessionActive = false;
     debugPrint('[KioskSecurityService] Office Session Ended.');
+    _syncMobileOfficeSession(false);
+  }
+
+  void _syncMobileOfficeSession(bool active) {
+    if (kIsWeb || !(Platform.isAndroid || Platform.isIOS)) return;
+    _mobileChannel.invokeMethod('setOfficeSession', {'active': active}).catchError((Object e) {
+      debugPrint('[KioskSecurityService] Failed to sync Office session to mobile native: $e');
+    });
+  }
+
+  Future<void> setPermissionRequestInProgress(bool active) async {
+    if (kIsWeb || !(Platform.isAndroid || Platform.isIOS)) return;
+    try {
+      await _mobileChannel.invokeMethod('setPermissionRequestInProgress', {'active': active});
+    } catch (e) {
+      debugPrint('[KioskSecurityService] Failed to setPermissionRequestInProgress: $e');
+    }
   }
 
   void handleAppLifecycleChange(AppLifecycleState state) {
@@ -79,24 +110,81 @@ class KioskSecurityService with WindowListener {
       // The Office session intentionally persists for the whole exam so the participant can
       // switch back and forth between ARA and Word/Excel/PowerPoint (parity with desktop Alt+Tab).
       // It is cleared only when the mode returns to Normal (see _applyModeState).
+      _hasRecordedCurrentPauseViolation = false;
       debugPrint('[KioskSecurityService] App resumed (officeSessionActive: $isOfficeSessionActive).');
       _reapplyMobileImmersiveMode();
     } else if (state == AppLifecycleState.paused || state == AppLifecycleState.hidden) {
       debugPrint('[KioskSecurityService] App paused/hidden.');
-      if (!isOfficeSessionActive) {
+      if (!isOfficeSessionActive && !devBypassLockdown && !_hasRecordedCurrentPauseViolation) {
+        _hasRecordedCurrentPauseViolation = true;
         violationCount++;
         final msg = 'PERINGATAN: Anda terdeteksi meninggalkan aplikasi ARA Assessment saat ujian! (Pelanggaran ke-$violationCount)';
         debugPrint('[KioskSecurityService] $msg');
-        securityAlertNotifier.value = msg;
+        _showSecurityAlert(msg, duration: const Duration(seconds: 4));
       }
+    }
+  }
+
+  /// Handles blocked navigation/system events reported by native Android (`MainActivity.kt`)
+  /// and iOS (`AppDelegate.swift`).
+  void handleMobileBlockedNavigation(String reason) {
+    if (devBypassLockdown || _currentMode == AssessmentMode.normal) return;
+
+    switch (reason) {
+      case 'back':
+        const msg = 'PERINGATAN: Tombol kembali (Back) dinonaktifkan! Anda tidak dapat kembali atau keluar dari aplikasi.';
+        debugPrint('[KioskSecurityService] $msg');
+        _showSecurityAlert(msg);
+        break;
+
+      case 'minimize':
+        if (!isOfficeSessionActive) {
+          if (!_hasRecordedCurrentPauseViolation) {
+            _hasRecordedCurrentPauseViolation = true;
+            violationCount++;
+          }
+          final msg =
+              'PERINGATAN: Anda terdeteksi meninggalkan aplikasi ARA Assessment saat ujian! Tombol Minimize / Home diblokir. (Pelanggaran ke-$violationCount)';
+          debugPrint('[KioskSecurityService] $msg');
+          _showSecurityAlert(msg, duration: const Duration(seconds: 4));
+        }
+        break;
+
+      case 'multi_window':
+        violationCount++;
+        final msg =
+            'PERINGATAN: Mode Split-Screen / Multi-Window dilarang selama ujian! (Pelanggaran ke-$violationCount)';
+        debugPrint('[KioskSecurityService] $msg');
+        _showSecurityAlert(msg, duration: const Duration(seconds: 4));
+        break;
+
+      case 'screenshot':
+        violationCount++;
+        final msg =
+            'PERINGATAN: Tangkapan layar (Screenshot) dilarang selama sesi ujian! (Pelanggaran ke-$violationCount)';
+        debugPrint('[KioskSecurityService] $msg');
+        _showSecurityAlert(msg, duration: const Duration(seconds: 4));
+        break;
+
+      case 'screen_capture':
+        violationCount++;
+        final msg =
+            'PERINGATAN: Perekaman layar / Screen Mirroring dilarang selama sesi ujian! (Pelanggaran ke-$violationCount)';
+        debugPrint('[KioskSecurityService] $msg');
+        _showSecurityAlert(msg, duration: const Duration(seconds: 4));
+        break;
     }
   }
 
   /// Android/iOS may restore the system bars after returning from another app (e.g. Word).
   void _reapplyMobileImmersiveMode() {
     if (kIsWeb || !(Platform.isAndroid || Platform.isIOS)) return;
+    if (devBypassLockdown || _currentMode == AssessmentMode.normal) return;
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky).catchError((Object e) {
       debugPrint('[KioskSecurityService] Failed to re-apply immersive mode: $e');
+    });
+    _mobileChannel.invokeMethod('setKioskLockdown', {'enabled': true}).catchError((Object e) {
+      debugPrint('[KioskSecurityService] Failed to re-apply native kiosk lockdown: $e');
     });
   }
 
@@ -200,12 +288,28 @@ class KioskSecurityService with WindowListener {
           onRefreshRequested?.call();
         }
       });
+    } else if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+      _mobileChannel.setMethodCallHandler((call) async {
+        if (call.method == 'onNavigationBlocked') {
+          final args = call.arguments;
+          String reason = 'back';
+          if (args is Map) {
+            reason = args['reason']?.toString() ?? 'back';
+          } else if (args is String) {
+            reason = args;
+          }
+          handleMobileBlockedNavigation(reason);
+        }
+      });
+
+      // Always-On Kiosk Lockdown from startup on Android & iOS
+      await setMode(AssessmentMode.exam);
     }
   }
 
-
   void dispose() {
     _watchdogTimer?.cancel();
+    _alertClearTimer?.cancel();
     if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       windowManager.removeListener(this);
     }
@@ -229,6 +333,14 @@ class KioskSecurityService with WindowListener {
       } catch (e) {
         debugPrint('[KioskSecurityService] Error during exit cleanup: $e');
       }
+    } else if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+      try {
+        await _mobileChannel.invokeMethod('exitApp');
+      } catch (e) {
+        debugPrint('[KioskSecurityService] Error during mobile exit cleanup: $e');
+      }
+      await SystemNavigator.pop();
+      return;
     }
     exit(0);
   }
@@ -264,6 +376,24 @@ class KioskSecurityService with WindowListener {
         await windowManager.maximize();
         await windowManager.setAlwaysOnTop(false);
       }
+    } else if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+      if (devBypassLockdown) {
+        await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+        try {
+          await _mobileChannel.invokeMethod('setKioskLockdown', {'enabled': false});
+          await _mobileChannel.invokeMethod('setFlagSecure', {'enabled': false});
+        } catch (e) {
+          debugPrint('[KioskSecurityService] Failed to disable mobile kiosk lockdown: $e');
+        }
+      } else {
+        await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+        try {
+          await _mobileChannel.invokeMethod('setKioskLockdown', {'enabled': true});
+          await _mobileChannel.invokeMethod('setFlagSecure', {'enabled': true});
+        } catch (e) {
+          debugPrint('[KioskSecurityService] Failed to enable mobile kiosk lockdown: $e');
+        }
+      }
     }
   }
 
@@ -278,6 +408,23 @@ class KioskSecurityService with WindowListener {
   }
 
   Future<void> setMode(AssessmentMode mode) async {
+    // On Android & iOS, Always-On Kiosk remains in AssessmentMode.exam unless
+    // explicitly unlocked by a supervisor (isManualOverride) or devBypassLockdown.
+    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+      if (mode == AssessmentMode.normal) {
+        if (isOfficeSessionActive) {
+          markOfficeSessionEnded();
+        }
+        if (!isManualOverride && !devBypassLockdown) {
+          if (_currentMode == AssessmentMode.normal) {
+            mode = AssessmentMode.exam;
+          } else {
+            return;
+          }
+        }
+      }
+    }
+
     if (_currentMode == mode) return;
     _applyModeState(mode);
 
@@ -331,28 +478,26 @@ class KioskSecurityService with WindowListener {
       switch (mode) {
         case AssessmentMode.normal:
           await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-          if (Platform.isAndroid) {
-            try {
-              await _mobileChannel.invokeMethod('setFlagSecure', {'enabled': false});
-            } catch (e) {
-              debugPrint('[KioskSecurityService] Failed to setFlagSecure: $e');
-            }
+          try {
+            await _mobileChannel.invokeMethod('setKioskLockdown', {'enabled': false});
+            await _mobileChannel.invokeMethod('setFlagSecure', {'enabled': false});
+          } catch (e) {
+            debugPrint('[KioskSecurityService] Failed to unlock mobile kiosk: $e');
           }
           break;
 
         case AssessmentMode.exam:
         case AssessmentMode.strictExam:
         case AssessmentMode.essayExam:
-          // Mobile Kiosk:
+          // Mobile Kiosk (Android & iOS):
           // 1. Fullscreen sticky immersive mode (hide system status & nav bars)
           await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-          // 2. Prevent screenshots and screen recording on Android
-          if (Platform.isAndroid) {
-            try {
-              await _mobileChannel.invokeMethod('setFlagSecure', {'enabled': true});
-            } catch (e) {
-              debugPrint('[KioskSecurityService] Failed to setFlagSecure: $e');
-            }
+          // 2. Enable native kiosk lockdown (Back/Minimize/Recents/Split-Screen/Screen-Capture protection)
+          try {
+            await _mobileChannel.invokeMethod('setKioskLockdown', {'enabled': !devBypassLockdown});
+            await _mobileChannel.invokeMethod('setFlagSecure', {'enabled': !devBypassLockdown});
+          } catch (e) {
+            debugPrint('[KioskSecurityService] Failed to set mobile kiosk lockdown: $e');
           }
           break;
       }

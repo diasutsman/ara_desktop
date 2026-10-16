@@ -14,6 +14,10 @@ void main() {
       service.devBypassLockdown = false;
     });
 
+    tearDown(() {
+      service.dispose();
+    });
+
     // -------------------------------------------------------------
     // EXPLOIT 1 & 6: Elevated Processes with Empty Exe Name (Device Manager, Regedit, Task Manager)
     // -------------------------------------------------------------
@@ -378,6 +382,53 @@ void main() {
 
         expect(service.violationCount, equals(0));
         expect(service.securityAlertNotifier.value, isNull);
+      });
+
+      test('Blocked Back navigation shows warning banner without incrementing leave violation count', () {
+        service.currentMode = AssessmentMode.exam;
+        service.violationCount = 0;
+        service.securityAlertNotifier.value = null;
+
+        service.handleMobileBlockedNavigation('back');
+
+        expect(service.violationCount, equals(0));
+        expect(service.securityAlertNotifier.value, contains('Tombol kembali (Back) dinonaktifkan'));
+      });
+
+      test('Blocked Minimize navigation increments violation once even if followed by lifecycle pause', () {
+        service.currentMode = AssessmentMode.exam;
+        service.violationCount = 0;
+        service.isOfficeSessionActive = false;
+        service.securityAlertNotifier.value = null;
+
+        // Native MainActivity reports minimize, followed immediately by Flutter paused lifecycle
+        service.handleMobileBlockedNavigation('minimize');
+        service.handleAppLifecycleChange(AppLifecycleState.paused);
+
+        expect(service.violationCount, equals(1));
+        expect(service.securityAlertNotifier.value, contains('Minimize / Home diblokir'));
+
+        // After resuming, a subsequent minimize increments violation to 2
+        service.handleAppLifecycleChange(AppLifecycleState.resumed);
+        service.handleMobileBlockedNavigation('minimize');
+        expect(service.violationCount, equals(2));
+      });
+
+      test('Blocked Multi-Window, Screenshot, and Screen Capture record violations', () {
+        service.currentMode = AssessmentMode.exam;
+        service.violationCount = 0;
+
+        service.handleMobileBlockedNavigation('multi_window');
+        expect(service.violationCount, equals(1));
+        expect(service.securityAlertNotifier.value, contains('Split-Screen / Multi-Window dilarang'));
+
+        service.handleMobileBlockedNavigation('screenshot');
+        expect(service.violationCount, equals(2));
+        expect(service.securityAlertNotifier.value, contains('Screenshot'));
+
+        service.handleMobileBlockedNavigation('screen_capture');
+        expect(service.violationCount, equals(3));
+        expect(service.securityAlertNotifier.value, contains('Perekaman layar'));
       });
     });
   });

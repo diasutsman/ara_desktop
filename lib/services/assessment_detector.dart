@@ -22,7 +22,15 @@ class AssessmentDetector {
         }
       };
 
-      // Listen for emergency dev keys & supervisor panel inside WebView
+      // Prevent browser-level history back navigation (popstate guard)
+      try {
+        history.pushState(null, document.title, location.href);
+        window.addEventListener('popstate', function() {
+          history.pushState(null, document.title, location.href);
+        });
+      } catch (_) {}
+
+      // Listen for emergency dev keys, supervisor panel, and block browser back shortcuts
       document.addEventListener('keydown', function(e) {
         if ((e.key === 'F12' || e.keyCode === 123) && (e.ctrlKey || e.altKey || e.shiftKey)) {
           if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
@@ -32,6 +40,23 @@ class AssessmentDetector {
         if (e.key === 'Escape' || (e.ctrlKey && (e.key === 'q' || e.key === 'Q'))) {
           if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
             window.flutter_inappwebview.callHandler('onDevExitTrigger');
+          }
+        }
+        // Block Alt+Left / Alt+Right browser back/forward shortcuts
+        if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.keyCode === 37 || e.keyCode === 39)) {
+          e.preventDefault();
+          e.stopPropagation();
+          return false;
+        }
+        // Block Backspace from triggering browser back when not inside a text input
+        if (e.key === 'Backspace' || e.keyCode === 8) {
+          var el = document.activeElement;
+          var tag = el ? el.tagName.toUpperCase() : '';
+          var isEditable = (tag === 'INPUT' || tag === 'TEXTAREA' || (el && el.isContentEditable));
+          if (!isEditable) {
+            e.preventDefault();
+            e.stopPropagation();
+            return false;
           }
         }
       });
