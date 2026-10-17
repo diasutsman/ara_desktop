@@ -272,9 +272,9 @@ void SetWindowControlsLocked(bool locked) {
       }
     }
 
-    // Ensure native HMENU is attached if it was ever missing
-    if (::GetMenu(g_mainWindowHandle) == nullptr) {
-      AttachNativeMenuBar(g_mainWindowHandle);
+    // Menu bar is rendered directly via Flutter widgets for uniform UX across Windows, Android, and iOS
+    if (::GetMenu(g_mainWindowHandle) != nullptr) {
+      ::SetMenu(g_mainWindowHandle, nullptr);
     }
 
     ::SetWindowPos(g_mainWindowHandle, nullptr, 0, 0, 0, 0,
@@ -286,31 +286,10 @@ void SetWindowControlsLocked(bool locked) {
 }
 
 void AttachNativeMenuBar(HWND hwnd) {
-  if (hwnd == nullptr || !::IsWindow(hwnd)) return;
-
-  HMENU hExistingMenu = ::GetMenu(hwnd);
-  if (hExistingMenu != nullptr) return; // Already attached
-
-  HMENU hMenuBar = ::CreateMenu();
-
-  ::AppendMenuW(hMenuBar, MF_STRING, ID_MENU_WORD, L" Word ");
-  ::AppendMenuW(hMenuBar, MF_STRING, ID_MENU_EXCEL, L" Excel ");
-  ::AppendMenuW(hMenuBar, MF_STRING, ID_MENU_POWERPOINT, L" PowerPoint ");
-  ::AppendMenuW(hMenuBar, MF_STRING, ID_MENU_REFRESH, L" Refresh ");
-
-  // Apply dark background brush to menu
-  static HBRUSH s_menuBrush = CreateSolidBrush(kWindowBarColor);
-  MENUINFO mi = { sizeof(MENUINFO) };
-  mi.cbSize = sizeof(MENUINFO);
-  mi.fMask = MIM_BACKGROUND | MIM_APPLYTOSUBMENUS;
-  mi.hbrBack = s_menuBrush;
-  ::SetMenuInfo(hMenuBar, &mi);
-
-  ::SetMenu(hwnd, hMenuBar);
-  ::DrawMenuBar(hwnd);
-
-  InitializeWindowDarkMode(hwnd);
-  std::cout << "[KioskHook] Native Win32 Menu Bar attached (Word, Excel, PowerPoint) to HWND: " << hwnd << std::endl;
+  // Menu bar is rendered directly via Flutter widgets for uniform UX across Windows, Android, and iOS
+  if (hwnd != nullptr && ::IsWindow(hwnd)) {
+    ::SetMenu(hwnd, nullptr);
+  }
 }
 
 bool HandleNativeMenuBarMessage(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, LRESULT* result) {

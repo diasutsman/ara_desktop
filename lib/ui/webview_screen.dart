@@ -166,7 +166,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
     );
   }
 
-  Future<NavigationActionPolicy> _handleMobileNavigation(
+  Future<NavigationActionPolicy> _handleNavigation(
     InAppWebViewController controller,
     NavigationAction action,
   ) async {
@@ -227,7 +227,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
     }
   }
 
-  Future<void> _handleMobileDownload(
+  Future<void> _handleDownload(
     InAppWebViewController controller,
     DownloadStartRequest request,
   ) async {
@@ -404,6 +404,63 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                         ),
                         const Divider(color: Colors.white24, height: 24),
                         const Text(
+                          'Buka Aplikasi Utilities (Word, Excel, PPT):',
+                          style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600),
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: ElevatedButton.icon(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFF2B579A),
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(vertical: 8),
+                                ),
+                                icon: const Icon(Icons.description, size: 16),
+                                label: const Text('Word', style: TextStyle(fontSize: 12)),
+                                onPressed: () {
+                                  Navigator.pop(ctx);
+                                  _handleLaunchOffice('word');
+                                },
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: ElevatedButton.icon(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFF217346),
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(vertical: 8),
+                                ),
+                                icon: const Icon(Icons.table_chart, size: 16),
+                                label: const Text('Excel', style: TextStyle(fontSize: 12)),
+                                onPressed: () {
+                                  Navigator.pop(ctx);
+                                  _handleLaunchOffice('excel');
+                                },
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: ElevatedButton.icon(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFFD24726),
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(vertical: 8),
+                                ),
+                                icon: const Icon(Icons.slideshow, size: 16),
+                                label: const Text('PPT', style: TextStyle(fontSize: 12)),
+                                onPressed: () {
+                                  Navigator.pop(ctx);
+                                  _handleLaunchOffice('powerpoint');
+                                },
+                              ),
+                            ),
+                          ],
+                        ),
+                        const Divider(color: Colors.white24, height: 24),
+                        const Text(
                           'Opsi Pengembang (Development):',
                           style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold),
                         ),
@@ -494,7 +551,10 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
               right: false,
               child: Column(
                 children: [
-                  if (_isMobile) _buildMobileTopBar(currentMode),
+                  if (_isMobile)
+                    _buildMobileTopBar(currentMode)
+                  else
+                    _buildDesktopMenuBar(currentMode),
                   Expanded(
                     child: KeyboardListener(
                       focusNode: _keyboardFocusNode,
@@ -536,9 +596,9 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                 javaScriptCanOpenWindowsAutomatically: true,
                 cacheEnabled: true,
                 userAgent: _platformUserAgent,
-                // Mobile-only hooks for opening portal Office documents (desktop unchanged).
-                useShouldOverrideUrlLoading: _isMobile,
-                useOnDownloadStart: _isMobile,
+                // Enable URL interception & download handlers across platforms for Office integration
+                useShouldOverrideUrlLoading: true,
+                useOnDownloadStart: true,
                 // iOS & Android: prevent swipe-back/overscroll and link previews.
                 allowsBackForwardNavigationGestures: false,
                 allowsLinkPreview: false,
@@ -565,9 +625,8 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                   action: PermissionResponseAction.GRANT,
                 );
               },
-              // Passed as null on desktop: flutter_inappwebview auto-enables these hooks when set.
-              shouldOverrideUrlLoading: _isMobile ? _handleMobileNavigation : null,
-              onDownloadStartRequest: _isMobile ? _handleMobileDownload : null,
+              shouldOverrideUrlLoading: _handleNavigation,
+              onDownloadStartRequest: _handleDownload,
               onLoadStart: (controller, url) {
                 setState(() {
                   _isLoading = true;
@@ -766,199 +825,134 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                 },
               ),
             ),
+          ],
+        ),
+      ),
+    ),
+  ],
+),
+),
+),
+);
+},
+);
+}
 
-            // Top-Right Floating Bar: Refresh Button & Active Mode Badge (Desktop)
-            if (!_isMobile)
-              Positioned(
-                top: 8,
-                right: 8,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // Floating Refresh Button
-                    Tooltip(
-                      message: 'Muat ulang halaman portal (F5 / Ctrl+R)',
-                      child: Material(
-                        color: Colors.transparent,
-                        child: InkWell(
-                          onTap: _handleRefresh,
-                          borderRadius: BorderRadius.circular(8),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF1E1E2E).withValues(alpha: 0.9),
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(color: Colors.white24, width: 1),
-                              boxShadow: const [
-                                BoxShadow(color: Colors.black45, blurRadius: 6, offset: Offset(0, 2)),
-                              ],
-                            ),
-                            child: const Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(Icons.refresh_rounded, size: 14, color: Colors.white),
-                                SizedBox(width: 5),
-                                Text(
-                                  'Refresh',
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    ValueListenableBuilder<AssessmentMode>(
-                      valueListenable: _kioskService.modeNotifier,
-                      builder: (context, mode, _) {
-                        if (mode != AssessmentMode.normal) {
-                          return Tooltip(
-                            message: 'Mode Ujian Aktif: Akses Word, Excel & PPT via Menu Utilities',
-                            child: GestureDetector(
-                              onDoubleTap: _showSupervisorDialog,
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                                decoration: BoxDecoration(
-                                  color: Colors.red.shade900.withValues(alpha: 0.85),
-                                  borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(
-                                    color: Colors.redAccent,
-                                    width: 1,
-                                  ),
-                                ),
-                                child: const Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(
-                                      Icons.lock,
-                                      size: 14,
-                                      color: Colors.white,
-                                    ),
-                                    SizedBox(width: 4),
-                                    Text(
-                                      'MODE UJIAN AKTIF (WORD, EXCEL, PPT)',
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 10,
-                                        fontWeight: FontWeight.bold,
-                                        letterSpacing: 0.5,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          );
-                        }
+  Future<void> _handleLaunchOffice(String val) async {
+    if (_kioskService.currentMode != AssessmentMode.normal) {
+      _kioskService.markOfficeSessionStarted();
+    }
+    OfficeLaunchResult res;
+    if (val == 'word') {
+      res = await OfficeLauncherService().launchWord();
+    } else if (val == 'excel') {
+      res = await OfficeLauncherService().launchExcel();
+    } else {
+      res = await OfficeLauncherService().launchPowerPoint();
+    }
+    if (!res.success && !res.openedStore && _kioskService.currentMode != AssessmentMode.normal) {
+      _kioskService.markOfficeSessionEnded();
+    }
+    _showOfficeResult(res);
+  }
 
-                        // Normal Mode: Tidak menampilkan badge mode ujian
-                        return const SizedBox.shrink();
-                      },
-                    ),
-                  ],
-                ),
-              ),
-
-            // Floating Dev Mode Toolbar & Emergency Exit Button (Top-Left)
-            if (_kioskService.isDevMode)
-              Positioned(
-                top: 8,
-                left: 8,
-                child: Material(
-                  color: Colors.transparent,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF1E1E2E).withValues(alpha: 0.95),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.amberAccent.shade400, width: 1.5),
-                      boxShadow: const [
-                        BoxShadow(color: Colors.black54, blurRadius: 8, offset: Offset(0, 3)),
-                      ],
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: Colors.amber.shade800,
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: const Row(
-                            children: [
-                              Icon(Icons.developer_mode, size: 12, color: Colors.white),
-                              SizedBox(width: 4),
-                              Text(
-                                'DEV MODE',
-                                style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        // Quick supervisor dialog
-                        InkWell(
-                          onTap: _showSupervisorDialog,
-                          borderRadius: BorderRadius.circular(4),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: Colors.white12,
-                              borderRadius: BorderRadius.circular(4),
-                            ),
-                            child: const Row(
-                              children: [
-                                Icon(Icons.settings, size: 12, color: Colors.white70),
-                                SizedBox(width: 4),
-                                Text('Panel (F12)', style: TextStyle(color: Colors.white, fontSize: 11)),
-                              ],
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        // Emergency Exit Button (Always available in dev mode)
-                        ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.red.shade700,
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                            minimumSize: Size.zero,
-                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                            elevation: 2,
-                          ),
-                          icon: const Icon(Icons.power_settings_new, size: 14),
-                          label: const Text(
-                            'KELUAR (Esc / Alt+F4)',
-                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-                          ),
-                          onPressed: () => _kioskService.exitApp(),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
+  Widget _buildUtilitiesButton() {
+    return Theme(
+      data: Theme.of(context).copyWith(
+        cardColor: const Color(0xFF2B2B2B),
+        popupMenuTheme: PopupMenuThemeData(
+          color: const Color(0xFF2B2B2B),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+            side: const BorderSide(color: Colors.white24, width: 1),
+          ),
+        ),
+        tooltipTheme: TooltipThemeData(
+          decoration: BoxDecoration(
+            color: const Color(0xFF1E1E1E),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: Colors.white24, width: 1),
+          ),
+          textStyle: const TextStyle(
+            color: Colors.white,
+            fontSize: 12,
+            fontWeight: FontWeight.w500,
           ),
         ),
       ),
+      child: PopupMenuButton<String>(
+        tooltip: 'Utilities (Word, Excel, PowerPoint)',
+        offset: const Offset(0, 40),
+        onSelected: _handleLaunchOffice,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+          decoration: BoxDecoration(
+            color: _isMobile ? Colors.white.withValues(alpha: 0.08) : const Color(0xFF1E1E2E).withValues(alpha: 0.9),
+            borderRadius: BorderRadius.circular(_isMobile ? 6 : 8),
+            border: Border.all(color: _isMobile ? Colors.white12 : Colors.white24, width: 1),
+            boxShadow: _isMobile
+                ? null
+                : const [
+                    BoxShadow(color: Colors.black45, blurRadius: 6, offset: Offset(0, 2)),
+                  ],
+          ),
+          child: const Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.apps_rounded, size: 14, color: Colors.white70),
+              SizedBox(width: 6),
+              Text(
+                'Utilities',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              SizedBox(width: 2),
+              Icon(Icons.arrow_drop_down, size: 16, color: Colors.white70),
+            ],
+          ),
+        ),
+        itemBuilder: (ctx) => [
+          const PopupMenuItem(
+            value: 'word',
+            child: Row(
+              children: [
+                Icon(Icons.description, color: Color(0xFF2B579A), size: 18),
+                SizedBox(width: 10),
+                Text('Microsoft Word', style: TextStyle(color: Colors.white, fontSize: 13)),
+              ],
+            ),
+          ),
+          const PopupMenuItem(
+            value: 'excel',
+            child: Row(
+              children: [
+                Icon(Icons.table_chart, color: Color(0xFF217346), size: 18),
+                SizedBox(width: 10),
+                Text('Microsoft Excel', style: TextStyle(color: Colors.white, fontSize: 13)),
+              ],
+            ),
+          ),
+          const PopupMenuItem(
+            value: 'powerpoint',
+            child: Row(
+              children: [
+                Icon(Icons.slideshow, color: Color(0xFFD24726), size: 18),
+                SizedBox(width: 10),
+                Text('Microsoft PowerPoint', style: TextStyle(color: Colors.white, fontSize: 13)),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
-  },
-);
   }
 
   Widget _buildMobileTopBar(AssessmentMode currentMode) {
     final isExam = currentMode != AssessmentMode.normal;
+
     return Container(
       height: 44,
       padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -1000,7 +994,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
           ),
           const Spacer(),
 
-          // Mobile Refresh Button
+          // Refresh Button
           IconButton(
             icon: const Icon(Icons.refresh_rounded, color: Colors.white, size: 20),
             tooltip: 'Refresh Halaman',
@@ -1009,114 +1003,12 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
             constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
             onPressed: _handleRefresh,
           ),
-          const SizedBox(width: 4),
+          const SizedBox(width: 6),
 
           // Utilities Dropdown Menu
-          Theme(
-            data: Theme.of(context).copyWith(
-              cardColor: const Color(0xFF2B2B2B),
-              popupMenuTheme: PopupMenuThemeData(
-                color: const Color(0xFF2B2B2B),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  side: const BorderSide(color: Colors.white24, width: 1),
-                ),
-              ),
-              tooltipTheme: TooltipThemeData(
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1E1E1E),
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: Colors.white24, width: 1),
-                ),
-                textStyle: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ),
-            child: PopupMenuButton<String>(
-              tooltip: 'Utilities',
-              offset: const Offset(0, 40),
-              onSelected: (val) async {
-                if (_kioskService.currentMode == AssessmentMode.normal) {
-                  await _kioskService.setMode(AssessmentMode.exam);
-                }
-                _kioskService.markOfficeSessionStarted();
-                OfficeLaunchResult res;
-                if (val == 'word') {
-                  res = await OfficeLauncherService().launchWord();
-                } else if (val == 'excel') {
-                  res = await OfficeLauncherService().launchExcel();
-                } else {
-                  res = await OfficeLauncherService().launchPowerPoint();
-                }
-                if (!res.success && !res.openedStore) {
-                  _kioskService.markOfficeSessionEnded();
-                }
-                _showOfficeResult(res);
-              },
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.08),
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: Colors.white12),
-                ),
-                child: const Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.apps_rounded, size: 14, color: Colors.white70),
-                    SizedBox(width: 6),
-                    Text(
-                      'Utilities',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    SizedBox(width: 2),
-                    Icon(Icons.arrow_drop_down, size: 16, color: Colors.white70),
-                  ],
-                ),
-              ),
-              itemBuilder: (ctx) => [
-                const PopupMenuItem(
-                  value: 'word',
-                  child: Row(
-                    children: [
-                      Icon(Icons.description, color: Color(0xFF2B579A), size: 18),
-                      SizedBox(width: 10),
-                      Text('Microsoft Word', style: TextStyle(color: Colors.white, fontSize: 13)),
-                    ],
-                  ),
-                ),
-                const PopupMenuItem(
-                  value: 'excel',
-                  child: Row(
-                    children: [
-                      Icon(Icons.table_chart, color: Color(0xFF217346), size: 18),
-                      SizedBox(width: 10),
-                      Text('Microsoft Excel', style: TextStyle(color: Colors.white, fontSize: 13)),
-                    ],
-                  ),
-                ),
-                const PopupMenuItem(
-                  value: 'powerpoint',
-                  child: Row(
-                    children: [
-                      Icon(Icons.slideshow, color: Color(0xFFD24726), size: 18),
-                      SizedBox(width: 10),
-                      Text('Microsoft PowerPoint', style: TextStyle(color: Colors.white, fontSize: 13)),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
+          _buildUtilitiesButton(),
 
-          // Exam Mode Indicator Badge on Mobile Top Bar
+          // Exam Mode Indicator Badge
           if (isExam) ...[
             const SizedBox(width: 8),
             GestureDetector(
@@ -1150,5 +1042,311 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
         ],
       ),
     );
+  }
+
+  Widget _buildDesktopMenuBar(AssessmentMode currentMode) {
+    final isExam = currentMode != AssessmentMode.normal;
+
+    return Container(
+      height: 30,
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      decoration: const BoxDecoration(
+        color: Color(0xFF2B2B2B), // Matches Windows dark title bar perfectly
+        border: Border(
+          bottom: BorderSide(color: Color(0xFF1E1E1E), width: 1),
+        ),
+      ),
+      child: Row(
+        children: [
+          // Utilities Menu (Word, Excel, PowerPoint)
+          _buildDesktopUtilitiesMenu(),
+
+          const SizedBox(width: 4),
+
+          // Refresh Button
+          _buildDesktopRefreshButton(),
+
+          // Dev Mode Controls
+          if (_kioskService.isDevMode) _buildDesktopDevControls(),
+
+          const Spacer(),
+
+          // Exam Mode Indicator Badge on Right
+          if (isExam) ...[
+            Tooltip(
+              message: 'Mode Ujian Aktif: Akses Word, Excel & PPT via Menu Utilities (Double-click untuk panel pengawas)',
+              child: GestureDetector(
+                onDoubleTap: _showSupervisorDialog,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: Colors.red.shade900.withValues(alpha: 0.9),
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(color: Colors.redAccent, width: 0.8),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.lock, size: 11, color: Colors.white),
+                      SizedBox(width: 4),
+                      Text(
+                        'MODE UJIAN AKTIF',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 9,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDesktopUtilitiesMenu() {
+    return Theme(
+      data: Theme.of(context).copyWith(
+        cardColor: const Color(0xFF1E1E1E),
+        popupMenuTheme: PopupMenuThemeData(
+          color: const Color(0xFF1E1E1E),
+          elevation: 10,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(6),
+            side: const BorderSide(color: Color(0xFF454545), width: 1),
+          ),
+        ),
+      ),
+      child: PopupMenuButton<String>(
+        tooltip: '',
+        offset: const Offset(0, 26),
+        onSelected: _handleLaunchOffice,
+        child: const _DesktopHoverButton(
+          tooltip: 'Utilities (Word, Excel, PowerPoint)',
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.apps_rounded, size: 14, color: Colors.white),
+              SizedBox(width: 5),
+              Text(
+                'Utilities',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  letterSpacing: 0.2,
+                ),
+              ),
+              SizedBox(width: 2),
+              Icon(Icons.arrow_drop_down, size: 14, color: Colors.white70),
+            ],
+          ),
+        ),
+        itemBuilder: (ctx) => [
+          const PopupMenuItem(
+            value: 'word',
+            height: 36,
+            child: Row(
+              children: [
+                Icon(Icons.description, color: Color(0xFF2B579A), size: 18),
+                SizedBox(width: 10),
+                Text(
+                  'Microsoft Word',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w400,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const PopupMenuItem(
+            value: 'excel',
+            height: 36,
+            child: Row(
+              children: [
+                Icon(Icons.table_chart, color: Color(0xFF217346), size: 18),
+                SizedBox(width: 10),
+                Text(
+                  'Microsoft Excel',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w400,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const PopupMenuItem(
+            value: 'powerpoint',
+            height: 36,
+            child: Row(
+              children: [
+                Icon(Icons.slideshow, color: Color(0xFFD24726), size: 18),
+                SizedBox(width: 10),
+                Text(
+                  'Microsoft PowerPoint',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w400,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDesktopRefreshButton() {
+    return _DesktopHoverButton(
+      tooltip: 'Refresh Halaman (${Platform.isWindows ? "F5 / Ctrl+R" : "Muat ulang"})',
+      onTap: _handleRefresh,
+      child: const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.refresh_rounded, size: 14, color: Colors.white),
+          SizedBox(width: 4),
+          Text(
+            'Refresh',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+              letterSpacing: 0.2,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDesktopDevControls() {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
+          width: 1,
+          height: 16,
+          color: Colors.white24,
+        ),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+          decoration: BoxDecoration(
+            color: Colors.amber.shade900,
+            borderRadius: BorderRadius.circular(3),
+          ),
+          child: const Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.developer_mode, size: 11, color: Colors.white),
+              SizedBox(width: 3),
+              Text(
+                'DEV',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 4),
+        _DesktopHoverButton(
+          tooltip: 'Buka panel pengawas ujian',
+          onTap: _showSupervisorDialog,
+          child: const Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.settings, size: 13, color: Colors.white70),
+              SizedBox(width: 4),
+              Text(
+                'Panel (F12)',
+                style: TextStyle(color: Colors.white, fontSize: 11),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 4),
+        _DesktopHoverButton(
+          tooltip: 'Keluar dari aplikasi',
+          onTap: () => _kioskService.exitApp(),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.power_settings_new, size: 13, color: Colors.red.shade300),
+              const SizedBox(width: 4),
+              Text(
+                'Keluar (Esc)',
+                style: TextStyle(color: Colors.red.shade300, fontSize: 11, fontWeight: FontWeight.w600),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _DesktopHoverButton extends StatefulWidget {
+  final Widget child;
+  final VoidCallback? onTap;
+  final String? tooltip;
+
+  const _DesktopHoverButton({
+    required this.child,
+    this.onTap,
+    this.tooltip,
+  });
+
+  @override
+  State<_DesktopHoverButton> createState() => _DesktopHoverButtonState();
+}
+
+class _DesktopHoverButtonState extends State<_DesktopHoverButton> {
+  bool _isHovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    Widget widgetChild = MouseRegion(
+      onEnter: (_) => setState(() => _isHovered = true),
+      onExit: (_) => setState(() => _isHovered = false),
+      cursor: SystemMouseCursors.click,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: _isHovered ? const Color(0xFF3C3C3D) : Colors.transparent,
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: widget.child,
+      ),
+    );
+
+    if (widget.onTap != null) {
+      widgetChild = GestureDetector(
+        onTap: widget.onTap,
+        child: widgetChild,
+      );
+    }
+
+    if (widget.tooltip != null && widget.tooltip!.isNotEmpty) {
+      return Tooltip(
+        message: widget.tooltip!,
+        child: widgetChild,
+      );
+    }
+
+    return widgetChild;
   }
 }

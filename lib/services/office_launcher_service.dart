@@ -45,42 +45,51 @@ class OfficeAppConfig {
 
   static const OfficeAppConfig word = OfficeAppConfig(
     name: 'Microsoft Word',
-    windowsCommand: 'winword',
+    windowsCommand: 'winword.exe',
     macAppName: 'Microsoft Word',
     linuxCommand: 'libreoffice --writer',
     androidPackages: [
       'com.microsoft.office.word',
       'com.microsoft.office.officehubrow',
+      'com.microsoft.office.officehub',
+      'cn.wps.moffice_eng',
+      'com.google.android.apps.docs.editors.docs',
     ],
-    schemes: ['ms-word://', 'ms-word:', 'ms-office:'],
+    schemes: ['ms-word://', 'ms-word:', 'ms-office:', 'googledocs:', 'wps:'],
     androidStoreUrl: 'https://play.google.com/store/apps/details?id=com.microsoft.office.word',
     iosStoreUrl: 'https://apps.apple.com/app/microsoft-word/id586447913',
   );
 
   static const OfficeAppConfig excel = OfficeAppConfig(
     name: 'Microsoft Excel',
-    windowsCommand: 'excel',
+    windowsCommand: 'excel.exe',
     macAppName: 'Microsoft Excel',
     linuxCommand: 'libreoffice --calc',
     androidPackages: [
       'com.microsoft.office.excel',
       'com.microsoft.office.officehubrow',
+      'com.microsoft.office.officehub',
+      'cn.wps.moffice_eng',
+      'com.google.android.apps.docs.editors.sheets',
     ],
-    schemes: ['ms-excel://', 'ms-excel:', 'ms-office:'],
+    schemes: ['ms-excel://', 'ms-excel:', 'ms-office:', 'googlesheets:', 'wps:'],
     androidStoreUrl: 'https://play.google.com/store/apps/details?id=com.microsoft.office.excel',
     iosStoreUrl: 'https://apps.apple.com/app/microsoft-excel/id586683407',
   );
 
   static const OfficeAppConfig powerPoint = OfficeAppConfig(
     name: 'Microsoft PowerPoint',
-    windowsCommand: 'powerpnt',
+    windowsCommand: 'powerpnt.exe',
     macAppName: 'Microsoft PowerPoint',
     linuxCommand: 'libreoffice --impress',
     androidPackages: [
       'com.microsoft.office.powerpoint',
       'com.microsoft.office.officehubrow',
+      'com.microsoft.office.officehub',
+      'cn.wps.moffice_eng',
+      'com.google.android.apps.docs.editors.slides',
     ],
-    schemes: ['ms-powerpoint://', 'ms-powerpoint:', 'ms-office:'],
+    schemes: ['ms-powerpoint://', 'ms-powerpoint:', 'ms-office:', 'googleslides:', 'wps:'],
     androidStoreUrl: 'https://play.google.com/store/apps/details?id=com.microsoft.office.powerpoint',
     iosStoreUrl: 'https://apps.apple.com/app/microsoft-powerpoint/id586449534',
   );
@@ -154,22 +163,39 @@ class OfficeLauncherService {
 
     try {
       if (Platform.isWindows) {
-        // Use cmd /c start "" command to allow Windows App Paths resolution for MS Office
-        final result = await Process.run('cmd', ['/c', 'start', '', app.windowsCommand]);
-        if (result.exitCode == 0) {
-          debugPrint('[OfficeLauncher] Successfully launched $name (${app.windowsCommand})');
-          return OfficeLaunchResult(
-            success: true,
-            message: 'Berhasil membuka $name.',
-          );
-        } else {
-          final errStr = result.stderr.toString().trim();
-          debugPrint('[OfficeLauncher] Failed to launch $name: $errStr');
-          return OfficeLaunchResult(
-            success: false,
-            message: 'Gagal membuka $name. Pastikan Microsoft Office telah terinstal pada komputer ini.',
-          );
+        // Try multiple command variations: with .exe, without .exe, and third-party Office suites (WPS, LibreOffice)
+        final commandsToTry = <String>[
+          app.windowsCommand,
+          app.windowsCommand.replaceAll('.exe', ''),
+          if (app == OfficeAppConfig.word) ...['wps.exe', 'wps', 'soffice.exe --writer'],
+          if (app == OfficeAppConfig.excel) ...['et.exe', 'et', 'soffice.exe --calc'],
+          if (app == OfficeAppConfig.powerPoint) ...['wpp.exe', 'wpp', 'soffice.exe --impress'],
+        ];
+
+        for (final cmd in commandsToTry) {
+          try {
+            final result = await Process.run('cmd', ['/c', 'start', '', cmd]);
+            if (result.exitCode == 0) {
+              debugPrint('[OfficeLauncher] Successfully launched $name via Windows command: $cmd');
+              return OfficeLaunchResult(
+                success: true,
+                message: 'Berhasil membuka $name.',
+              );
+            }
+          } catch (e) {
+            debugPrint('[OfficeLauncher] Failed to launch $name with $cmd: $e');
+          }
         }
+
+        // Fallback: try URI schemes on Windows (ms-word:, ms-excel:, ms-powerpoint:)
+        if (await _tryLaunchSchemes(app.schemes)) {
+          return OfficeLaunchResult(success: true, message: 'Berhasil membuka $name.');
+        }
+
+        return OfficeLaunchResult(
+          success: false,
+          message: 'Gagal membuka $name. Pastikan Microsoft Office telah terinstal pada komputer ini.',
+        );
       } else if (Platform.isAndroid) {
         // 1. Try launching through native package manager via MethodChannel
         for (final pkg in app.androidPackages) {

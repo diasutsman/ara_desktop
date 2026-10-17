@@ -197,7 +197,8 @@ class OfficeDocumentService {
   // Download & open
   // ---------------------------------------------------------------------------
 
-  bool get _isMobile => !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+  bool get _isSupportedPlatform =>
+      !kIsWeb && (Platform.isAndroid || Platform.isIOS || Platform.isWindows || Platform.isMacOS || Platform.isLinux);
 
   /// Downloads [url] using the WebView's cookies and opens it in the matching Office app.
   Future<OfficeLaunchResult> downloadAndOpen({
@@ -206,10 +207,10 @@ class OfficeDocumentService {
     String? mimeType,
     String? userAgent,
   }) async {
-    if (!_isMobile) {
+    if (!_isSupportedPlatform) {
       return const OfficeLaunchResult(
         success: false,
-        message: 'Membuka dokumen dari portal hanya didukung pada perangkat mobile.',
+        message: 'Membuka dokumen dari portal tidak didukung pada platform ini.',
       );
     }
 
@@ -268,7 +269,7 @@ class OfficeDocumentService {
     }
   }
 
-  /// Opens an already-downloaded local file through the native `openDocument` channel method.
+  /// Opens an already-downloaded local file through the appropriate native handler.
   Future<OfficeLaunchResult> openLocalFile(
     String path, {
     required String mimeType,
@@ -280,6 +281,61 @@ class OfficeDocumentService {
     // Mark BEFORE leaving the app so the pause event is not counted as a violation.
     if (app != null) {
       KioskSecurityService().markOfficeSessionStarted();
+    }
+
+    if (Platform.isWindows) {
+      try {
+        ProcessResult? res;
+        if (app != null) {
+          // Attempt to open specifically with the configured Office app command (e.g. winword.exe / excel.exe / powerpnt.exe)
+          res = await Process.run('cmd', ['/c', 'start', '', app.windowsCommand, path]);
+        }
+        // If not successful or no specific app, open with default registered Windows handler for this file extension
+        if (res == null || res.exitCode != 0) {
+          res = await Process.run('cmd', ['/c', 'start', '', path]);
+        }
+        if (res.exitCode == 0) {
+          return OfficeLaunchResult(
+            success: true,
+            message: 'Membuka dokumen di $appName...',
+          );
+        } else {
+          return OfficeLaunchResult(
+            success: false,
+            message: 'Gagal membuka dokumen di Windows. Pastikan $appName telah terinstal.',
+          );
+        }
+      } catch (e) {
+        debugPrint('[OfficeDocument] Windows openLocalFile error: $e');
+        return OfficeLaunchResult(
+          success: false,
+          message: 'Terjadi kesalahan saat membuka dokumen: $e',
+        );
+      }
+    } else if (Platform.isMacOS) {
+      try {
+        final res = app != null
+            ? await Process.run('open', ['-a', app.macAppName, path])
+            : await Process.run('open', [path]);
+        if (res.exitCode == 0) {
+          return OfficeLaunchResult(success: true, message: 'Membuka dokumen di $appName...');
+        } else {
+          return OfficeLaunchResult(success: false, message: 'Gagal membuka dokumen di macOS.');
+        }
+      } catch (e) {
+        return OfficeLaunchResult(success: false, message: 'Terjadi kesalahan saat membuka dokumen di macOS: $e');
+      }
+    } else if (Platform.isLinux) {
+      try {
+        final res = await Process.run('xdg-open', [path]);
+        if (res.exitCode == 0) {
+          return OfficeLaunchResult(success: true, message: 'Membuka dokumen di $appName...');
+        } else {
+          return OfficeLaunchResult(success: false, message: 'Gagal membuka dokumen di Linux.');
+        }
+      } catch (e) {
+        return OfficeLaunchResult(success: false, message: 'Terjadi kesalahan saat membuka dokumen di Linux: $e');
+      }
     }
 
     try {

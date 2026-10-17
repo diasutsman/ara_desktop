@@ -36,6 +36,10 @@
 		<string>ms-excel</string>
 		<string>ms-powerpoint</string>
 		<string>ms-office</string>
+		<string>googledocs</string>
+		<string>googlesheets</string>
+		<string>googleslides</string>
+		<string>wps</string>
 	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>

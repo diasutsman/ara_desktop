@@ -228,6 +228,11 @@ class KioskSecurityService with WindowListener {
     'winword.exe',
     'excel.exe',
     'powerpnt.exe',
+    'wps.exe',
+    'et.exe',
+    'wpp.exe',
+    'soffice.exe',
+    'soffice.bin',
     // Essential Windows OS components
     'explorer.exe',
     'dwm.exe',
@@ -279,9 +284,9 @@ class KioskSecurityService with WindowListener {
       _kioskHookChannel.setMethodCallHandler((call) async {
         if (call.method == 'onOfficeLaunched') {
           final app = call.arguments?.toString() ?? 'office';
-          debugPrint('[KioskSecurityService] Native Win32 Menu triggered: $app');
-          if (_currentMode == AssessmentMode.normal) {
-            await setMode(AssessmentMode.exam);
+          debugPrint('[KioskSecurityService] Office launched: $app');
+          if (_currentMode != AssessmentMode.normal) {
+            markOfficeSessionStarted();
           }
         } else if (call.method == 'onRefreshRequested') {
           debugPrint('[KioskSecurityService] Native Win32 Menu triggered refresh');

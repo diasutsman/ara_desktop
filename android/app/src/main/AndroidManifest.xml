@@ -58,11 +58,16 @@
 
          In particular, this is used by the Flutter engine in io.flutter.plugin.text.ProcessTextPlugin. -->
     <queries>
-        <!-- Package visibility for Microsoft Office applications -->
+        <!-- Package visibility for Microsoft Office applications & compatible viewers -->
         <package android:name="com.microsoft.office.word" />
         <package android:name="com.microsoft.office.excel" />
         <package android:name="com.microsoft.office.powerpoint" />
         <package android:name="com.microsoft.office.officehubrow" />
+        <package android:name="com.microsoft.office.officehub" />
+        <package android:name="cn.wps.moffice_eng" />
+        <package android:name="com.google.android.apps.docs.editors.docs" />
+        <package android:name="com.google.android.apps.docs.editors.sheets" />
+        <package android:name="com.google.android.apps.docs.editors.slides" />
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="ms-word" />
