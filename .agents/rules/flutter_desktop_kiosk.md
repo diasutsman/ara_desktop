@@ -111,3 +111,10 @@
   - In `KioskSecurityService.initialize()`, engage `setMode(AssessmentMode.exam)` on startup for macOS (`Platform.isMacOS`).
   - In `lib/main.dart`, do not constrain the window to 1366x768 on macOS (`waitUntilReadyToShow(null, ...)`).
 
+## 7. Development Mode & Proctoring Watchdog Invariants
+- **Preserving Proctoring During Dev Testing**:
+  - `DEV_MODE=true` provides developer conveniences (window exit with `Esc`/`Ctrl+Q`, supervisor dialog on `F12`, DevTools inspectable WebView `isInspectable: true`, server toggle `Ctrl+Shift+L` between localhost and production).
+  - **CRITICAL INVARIANT**: Development mode MUST NOT disable the 200ms proctoring watchdog timer or suppress unauthorized window detection (`_blockUnauthorizedWindow`). Developers test proctoring by switching to other apps; if the watchdog is stopped or alerts are bypassed, app switching detection fails completely.
+  - `DEV_BYPASS_LOCKDOWN` in `.env` must default to `false`. When `devBypassLockdown` is toggled on via the F12 panel, it should only bypass forced window maximization/fullscreen layout, while still actively monitoring and detecting unauthorized apps in exam mode.
+  - `DEV_RECORD_VIOLATIONS` in `.env` must default to `true` so local backend test endpoints (`/Violation/record`) and in-page JavaScript violation bridges receive test events.
+

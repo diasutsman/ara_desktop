@@ -618,7 +618,6 @@ class KioskSecurityService with WindowListener {
             // Don't stay on top so Word, Excel, and PowerPoint can appear over ARA
             await windowManager.setAlwaysOnTop(false);
             await windowManager.setPreventClose(!isDevMode);
-            _startWatchdog();
           } else {
             await _setWindowLock(false);
             await windowManager.setTitleBarStyle(TitleBarStyle.normal);
@@ -627,8 +626,9 @@ class KioskSecurityService with WindowListener {
             await windowManager.setMaximizable(true);
             await windowManager.setAlwaysOnTop(false);
             await windowManager.setPreventClose(false);
-            _stopWatchdog();
           }
+          // Watchdog ALWAYS runs in exam mode to detect app switching & unauthorized windows
+          _startWatchdog();
           break;
       }
     } else if (Platform.isMacOS) {
@@ -779,11 +779,7 @@ class KioskSecurityService with WindowListener {
 
     final lowerExe = processExe.toLowerCase();
 
-    if (isDevMode && isDevBypass) {
-      return const SecurityPolicyEvaluation(WindowAction.allow, 'Dev mode bypass active');
-    }
-
-    if (isDevMode && _devWhitelist.contains(lowerExe)) {
+    if (isDevMode && isDevBypass && _devWhitelist.contains(lowerExe)) {
       return const SecurityPolicyEvaluation(WindowAction.allow, 'Dev whitelist bypass');
     }
 
@@ -872,11 +868,6 @@ class KioskSecurityService with WindowListener {
   }
 
   void _blockUnauthorizedWindow(HWND hwnd, String exeName, String alertMessage) {
-    if (isDevMode && devBypassLockdown) {
-      debugPrint('[KioskSecurityService] [DEV MODE BYPASS] Window ($exeName) bypassed in dev mode.');
-      return;
-    }
-
     debugPrint('[KioskSecurityService] Unauthorized app detected: $exeName. Minimizing and seizing foreground for ARA...');
 
     // 1. Double-action minimize: PostMessage WM_SYSCOMMAND SC_MINIMIZE for UWP ApplicationFrameHost & ShowWindow SW_MINIMIZE

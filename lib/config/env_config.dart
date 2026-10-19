@@ -24,7 +24,7 @@ class EnvConfig {
   final ValueNotifier<bool> devModeNotifier = ValueNotifier<bool>(kDebugMode);
 
   /// ValueNotifier for whether window lockdown bypass is active
-  final ValueNotifier<bool> bypassLockdownNotifier = ValueNotifier<bool>(true);
+  final ValueNotifier<bool> bypassLockdownNotifier = ValueNotifier<bool>(false);
 
   AppTargetMode get targetMode => targetModeNotifier.value;
   set targetMode(AppTargetMode mode) {
@@ -41,7 +41,7 @@ class EnvConfig {
     bypassLockdownNotifier.value = val;
   }
 
-  bool recordViolationsInDev = false;
+  bool recordViolationsInDev = true;
 
   String productionUrl = defaultProductionUrl;
   String localDesktopUrl = defaultLocalDesktopUrl;
@@ -75,21 +75,20 @@ class EnvConfig {
       devModeNotifier.value = appEnv == 'development' || kDebugMode;
     }
 
-    // 3. Resolve Dev Bypass Lockdown
+    // 3. Resolve Dev Bypass Lockdown (default false to keep proctoring watchdog active)
     final bypassStr = dotenv.maybeGet('DEV_BYPASS_LOCKDOWN');
     if (bypassStr != null) {
       bypassLockdownNotifier.value = bypassStr.toLowerCase().trim() == 'true' || bypassStr.trim() == '1';
     } else {
-      // In dev mode, default bypass lockdown to true so developers are never trapped
-      bypassLockdownNotifier.value = devModeNotifier.value;
+      bypassLockdownNotifier.value = false;
     }
 
-    // 4. Resolve Dev Violations Recording
+    // 4. Resolve Dev Violations Recording (default true)
     final recordViolationsStr = dotenv.maybeGet('DEV_RECORD_VIOLATIONS');
     if (recordViolationsStr != null) {
       recordViolationsInDev = recordViolationsStr.toLowerCase().trim() == 'true' || recordViolationsStr.trim() == '1';
     } else {
-      recordViolationsInDev = false;
+      recordViolationsInDev = true;
     }
 
     // 5. Target URLs

@@ -1,5 +1,3 @@
-import 'dart:io';
-import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ara_desktop/config/env_config.dart';
 import 'package:ara_desktop/services/kiosk_security_service.dart';
@@ -56,7 +54,7 @@ void main() {
       service.isDevMode = true;
       service.devBypassLockdown = true;
 
-      // When devBypassLockdown is active in dev mode, apps are allowed bypass
+      // When isDevBypass is true, dev tools in _devWhitelist are allowed
       final eval = service.evaluateWindowPolicy(
         mode: AssessmentMode.exam,
         processExe: 'code.exe',
@@ -66,7 +64,19 @@ void main() {
         isDevBypass: true,
       );
       expect(eval.isAllowed, isTrue);
-      expect(eval.reason, contains('Dev mode bypass active'));
+      expect(eval.reason, contains('Dev whitelist bypass'));
+
+      // Unauthorized apps (like chrome.exe, spotify.exe) MUST BE BLOCKED in exam mode
+      final chromeEval = service.evaluateWindowPolicy(
+        mode: AssessmentMode.exam,
+        processExe: 'chrome.exe',
+        className: 'Chrome_WidgetWin_1',
+        windowTitle: 'Google Chrome',
+        isOwnProcess: false,
+        isDevBypass: false,
+      );
+      expect(chromeEval.isBlocked, isTrue);
+      expect(chromeEval.reason, contains('diblokir'));
     });
   });
 }
