@@ -10,4 +10,11 @@ class AppDelegate: FlutterAppDelegate {
   override func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
     return true
   }
+
+  override func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+    if MainFlutterWindow.isKioskLocked && !MainFlutterWindow.isExitingCleanly {
+      return .terminateCancel
+    }
+    return .terminateNow
+  }
 }

@@ -3,14 +3,18 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
+import 'config/env_config.dart';
 import 'services/kiosk_security_service.dart';
 import 'ui/webview_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // Initialize environment configuration (.env)
+  await EnvConfig().initialize();
+
   // Initialize desktop window manager if running on Desktop
-  if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+  if (!kIsWeb && (Platform.isWindows || Platform.isLinux)) {
     await windowManager.ensureInitialized();
 
     const windowOptions = WindowOptions(
@@ -23,6 +27,12 @@ void main() async {
     );
 
     await windowManager.waitUntilReadyToShow(windowOptions, () async {
+      await windowManager.show();
+      await windowManager.focus();
+    });
+  } else if (!kIsWeb && Platform.isMacOS) {
+    await windowManager.ensureInitialized();
+    await windowManager.waitUntilReadyToShow(null, () async {
       await windowManager.show();
       await windowManager.focus();
     });

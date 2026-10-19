@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -7,6 +8,7 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:window_manager/window_manager.dart';
+import '../config/env_config.dart';
 import '../services/assessment_detector.dart';
 import '../services/kiosk_security_service.dart';
 import '../services/office_document_service.dart';
@@ -58,6 +60,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
     _requestInitialPermissions();
     _detector.onSupervisorRequested = _showSupervisorDialog;
     _kioskService.onRefreshRequested = _handleRefresh;
+    _kioskService.onViolationDetected = _handleKioskViolation;
     HardwareKeyboard.instance.addHandler(_handleGlobalKeyEvent);
     if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       windowManager.addListener(this);
@@ -71,10 +74,72 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
       windowManager.removeListener(this);
     }
     _kioskService.onRefreshRequested = null;
+    _kioskService.onViolationDetected = null;
     HardwareKeyboard.instance.removeHandler(_handleGlobalKeyEvent);
     _detector.onSupervisorRequested = null;
     _keyboardFocusNode.dispose();
     super.dispose();
+  }
+
+  Future<void> _handleKioskViolation(
+    String violationType,
+    String violationLabel,
+    String description,
+    String source,
+  ) async {
+    debugPrint('[WebViewScreen] Recording violation: $violationType ($violationLabel) via $source');
+
+    // 1. Report via InAppWebView JS bridge (uses active session cookies & updates live badge on Exam/Take)
+    final controller = _webViewController;
+    if (controller != null) {
+      final jsCall =
+          'if (typeof window.recordAraDesktopViolation === "function") { '
+          'window.recordAraDesktopViolation(${jsonEncode(violationType)}, ${jsonEncode(violationLabel)}, ${jsonEncode(description)}, ${jsonEncode(source)}); '
+          '}';
+      unawaited(
+        controller.evaluateJavascript(source: jsCall).catchError((Object e) {
+          debugPrint('[WebViewScreen] JS violation bridge error: $e');
+          return null;
+        }),
+      );
+    }
+
+    // 2. Also send direct native Dart HTTP POST fallback (in case WebView JS is suspended while app is paused/minimized)
+    if (_kioskService.isDevMode && !EnvConfig().recordViolationsInDev) {
+      debugPrint('[WebViewScreen] [DEV MODE] Direct HTTP violation POST skipped in dev mode.');
+      return;
+    }
+
+    final ctx = _detector.lastExamContext;
+    final baseUrl = (ctx['baseUrl'] ?? '').trim().replaceAll(RegExp(r'/$'), '');
+    final userID = (ctx['userID'] ?? '').trim();
+    if (baseUrl.isEmpty || userID.isEmpty) {
+      return;
+    }
+
+    try {
+      final endpointUri = Uri.parse('$baseUrl/Violation/record');
+      final client = HttpClient()..connectionTimeout = const Duration(seconds: 6);
+      final req = await client.postUrl(endpointUri);
+      req.headers.set(HttpHeaders.contentTypeHeader, 'application/json; charset=utf-8');
+      final payload = jsonEncode({
+        'userID': userID,
+        'examID': ctx['examID'] ?? '',
+        'classID': ctx['classID'] ?? '',
+        'responseID': ctx['responseID'] ?? '',
+        'violation_type': violationType,
+        'violation_label': violationLabel,
+        'description': description,
+        'source': source,
+        'platform': kIsWeb ? 'web' : '${Platform.operatingSystem} (${Platform.operatingSystemVersion})',
+      });
+      req.add(utf8.encode(payload));
+      final resp = await req.close();
+      await resp.drain<void>();
+      client.close(force: false);
+    } catch (e) {
+      debugPrint('[WebViewScreen] Direct HTTP violation POST failed: $e');
+    }
   }
 
   void _handleRefresh() {
@@ -85,6 +150,46 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
       _isLoading = true;
     });
     _webViewController?.reload();
+  }
+
+  Future<void> _switchTargetServer(AppTargetMode newMode) async {
+    if (EnvConfig().targetMode == newMode) return;
+    setState(() {
+      EnvConfig().targetMode = newMode;
+      _isLoading = true;
+      _hasError = false;
+    });
+    final targetUrl = EnvConfig().currentUrl;
+    debugPrint('[WebViewScreen] Switching target server to ${newMode.name.toUpperCase()}: $targetUrl');
+    await _webViewController?.loadUrl(
+      urlRequest: URLRequest(url: WebUri(targetUrl)),
+    );
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              Icon(
+                newMode == AppTargetMode.local ? Icons.computer : Icons.cloud_done,
+                color: Colors.white,
+                size: 20,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Server: ${newMode == AppTargetMode.local ? "LOCAL (localhost)" : "PRODUCTION (ara-assessment.com)"}',
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ),
+            ],
+          ),
+          backgroundColor: newMode == AppTargetMode.local ? Colors.blue.shade900 : Colors.teal.shade900,
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    }
   }
 
   @override
@@ -117,6 +222,27 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
         if (event.logicalKey == LogicalKeyboardKey.escape ||
             (HardwareKeyboard.instance.isControlPressed && event.logicalKey == LogicalKeyboardKey.keyQ)) {
           _kioskService.exitApp();
+          return true;
+        }
+
+        // Quick toggle server mode between Local and Production (Ctrl + Shift + L)
+        if (HardwareKeyboard.instance.isControlPressed &&
+            HardwareKeyboard.instance.isShiftPressed &&
+            event.logicalKey == LogicalKeyboardKey.keyL) {
+          final nextMode = EnvConfig().isLocal ? AppTargetMode.production : AppTargetMode.local;
+          _switchTargetServer(nextMode);
+          return true;
+        }
+
+        // Quick toggle Dev Mode (Ctrl + Shift + D)
+        if (HardwareKeyboard.instance.isControlPressed &&
+            HardwareKeyboard.instance.isShiftPressed &&
+            event.logicalKey == LogicalKeyboardKey.keyD) {
+          setState(() {
+            final nextDev = !_kioskService.isDevMode;
+            _kioskService.isDevMode = nextDev;
+            EnvConfig().isDevMode = nextDev;
+          });
           return true;
         }
       }
@@ -461,13 +587,44 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                         ),
                         const Divider(color: Colors.white24, height: 24),
                         const Text(
+                          'Pilih Target Server (URL Mode):',
+                          style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 8),
+                        ListTile(
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          tileColor: EnvConfig().isLocal ? Colors.blue.withValues(alpha: 0.2) : Colors.transparent,
+                          leading: const Icon(Icons.computer, color: Colors.blueAccent),
+                          title: const Text('Mode Local (Localhost)', style: TextStyle(color: Colors.white, fontSize: 14)),
+                          subtitle: Text(EnvConfig().localUrl, style: const TextStyle(color: Colors.white54, fontSize: 11)),
+                          trailing: EnvConfig().isLocal ? const Icon(Icons.check_circle, color: Colors.blueAccent, size: 20) : null,
+                          onTap: () async {
+                            Navigator.pop(ctx);
+                            await _switchTargetServer(AppTargetMode.local);
+                          },
+                        ),
+                        const SizedBox(height: 4),
+                        ListTile(
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          tileColor: EnvConfig().isProduction ? Colors.green.withValues(alpha: 0.2) : Colors.transparent,
+                          leading: const Icon(Icons.cloud_outlined, color: Colors.greenAccent),
+                          title: const Text('Mode Production (Link Asli)', style: TextStyle(color: Colors.white, fontSize: 14)),
+                          subtitle: Text(EnvConfig().productionUrl, style: const TextStyle(color: Colors.white54, fontSize: 11)),
+                          trailing: EnvConfig().isProduction ? const Icon(Icons.check_circle, color: Colors.greenAccent, size: 20) : null,
+                          onTap: () async {
+                            Navigator.pop(ctx);
+                            await _switchTargetServer(AppTargetMode.production);
+                          },
+                        ),
+                        const Divider(color: Colors.white24, height: 24),
+                        const Text(
                           'Opsi Pengembang (Development):',
                           style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold),
                         ),
                         SwitchListTile(
                           contentPadding: EdgeInsets.zero,
                           title: const Text('Development Mode', style: TextStyle(color: Colors.white, fontSize: 13)),
-                          subtitle: const Text('Bolehkan Task Manager, IDE, & Alt+F4',
+                          subtitle: const Text('Bolehkan Task Manager, Browser, IDE, & Alt+F4',
                               style: TextStyle(color: Colors.white54, fontSize: 11)),
                           value: _kioskService.isDevMode,
                           activeThumbColor: Colors.amber,
@@ -475,6 +632,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                             setDialogState(() {
                               setState(() {
                                 _kioskService.isDevMode = val;
+                                EnvConfig().isDevMode = val;
                               });
                             });
                           },
@@ -482,7 +640,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                         SwitchListTile(
                           contentPadding: EdgeInsets.zero,
                           title: const Text('Bypass Lockdown Window', style: TextStyle(color: Colors.white, fontSize: 13)),
-                          subtitle: const Text('Nonaktifkan fullscreen & always-on-top',
+                          subtitle: const Text('Nonaktifkan fullscreen, auto-minimize, & always-on-top',
                               style: TextStyle(color: Colors.white54, fontSize: 11)),
                           value: _kioskService.devBypassLockdown,
                           activeThumbColor: Colors.amber,
@@ -571,13 +729,9 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
           children: [
             // Main Webview
             InAppWebView(
-                    initialUrlRequest: URLRequest(
-                      // Production base URL
-                      url: WebUri('https://ara-assessment.com/assess/login'),
-
-                      // Local testing base URL (uncomment to test localhost):
-                      // url: WebUri( !Platform.isWindows ? 'http://192.168.100.7/new_ara' : 'http://localhost/new_ara'),
-                    ),
+              initialUrlRequest: URLRequest(
+                url: WebUri(EnvConfig().currentUrl),
+              ),
               initialSettings: InAppWebViewSettings(
                 javaScriptEnabled: true,
                 allowsInlineMediaPlayback: true,
@@ -587,7 +741,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                 domStorageEnabled: true,
                 databaseEnabled: true,
                 supportZoom: false,
-                isInspectable: kDebugMode,
+                isInspectable: _kioskService.isDevMode || kDebugMode,
                 transparentBackground: false,
                 mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
                 thirdPartyCookiesEnabled: true,
@@ -989,6 +1143,29 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                     letterSpacing: 0.3,
                   ),
                 ),
+                if (_kioskService.isDevMode) ...[
+                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: EnvConfig().isLocal ? Colors.blue.shade900 : Colors.teal.shade900,
+                      borderRadius: BorderRadius.circular(4),
+                      border: Border.all(
+                        color: EnvConfig().isLocal ? Colors.blueAccent : Colors.tealAccent,
+                        width: 0.8,
+                      ),
+                    ),
+                    child: Text(
+                      EnvConfig().isLocal ? 'LOCAL' : 'PROD',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 9,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
@@ -1231,6 +1408,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
   }
 
   Widget _buildDesktopDevControls() {
+    final isLocal = EnvConfig().isLocal;
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -1263,8 +1441,36 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
           ),
         ),
         const SizedBox(width: 4),
+        // Target Server Switcher (Local vs Production)
         _DesktopHoverButton(
-          tooltip: 'Buka panel pengawas ujian',
+          tooltip: 'Target Server: ${isLocal ? "Localhost (${EnvConfig().localUrl})" : "Production (${EnvConfig().productionUrl})"} (Klik ganti / Ctrl+Shift+L)',
+          onTap: () {
+            final next = isLocal ? AppTargetMode.production : AppTargetMode.local;
+            _switchTargetServer(next);
+          },
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                isLocal ? Icons.computer : Icons.cloud_outlined,
+                size: 13,
+                color: isLocal ? Colors.lightBlueAccent : Colors.greenAccent,
+              ),
+              const SizedBox(width: 4),
+              Text(
+                isLocal ? 'Localhost' : 'Production',
+                style: TextStyle(
+                  color: isLocal ? Colors.lightBlueAccent : Colors.greenAccent,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 4),
+        _DesktopHoverButton(
+          tooltip: 'Buka panel pengawas ujian (F12)',
           onTap: _showSupervisorDialog,
           child: const Row(
             mainAxisSize: MainAxisSize.min,

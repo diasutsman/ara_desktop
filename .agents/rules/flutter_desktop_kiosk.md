@@ -91,5 +91,23 @@
   - In `android/app/src/main/AndroidManifest.xml`: set `android:label="ARA Mobile"`.
   - In `ios/Runner/Info.plist`: set `CFBundleDisplayName` and `CFBundleName` to `ARA Mobile`.
   - In `_buildMobileTopBar`: use official `assets/icon/app_icon.png` with rounded corners next to the text `ARA Mobile`.
-  - Display a branded ARA loading overlay while the WebView loads to prevent unstyled blank white frames.
+
+## 6. macOS Desktop Kiosk Lockdown
+- **Multi-Desktop (Spaces) & Trackpad 3-Finger Swipe Protection**:
+  - In `macos/Runner/MainFlutterWindow.swift`, apply `collectionBehavior`:
+    `[.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]`
+    - `.canJoinAllSpaces`: The window is pinned across ALL macOS Spaces (virtual desktops). When the user swipes 3 fingers left or right to switch spaces, the window remains visible and stays pinned on all spaces, preventing any peek or switch to another desktop or application.
+    - `.fullScreenAuxiliary` & `.stationary`: Prevents the window from creating an isolated Space or animating during Exposé/Space transitions.
+  - Window level: Set to `.screenSaver` (above normal apps, Dock, and Menu Bar) during lockdown, and `.normal` during authorized Office sessions.
+  - Presentation Options:
+    `[.hideDock, .hideMenuBar, .disableProcessSwitching, .disableForceQuit, .disableSessionTermination, .disableHideApplication, .disableAppleMenu]`
+    - `.disableProcessSwitching`: Disables `Cmd + Tab` and 3/4-finger swipe gestures for Mission Control and Exposé.
+- **Trackpad Gesture Suppression**:
+  - Override `swipe(with:)` and `scrollWheel(with:)` on `MainFlutterWindow`, plus `NSEvent.addLocalMonitorForEvents(matching: [.swipe])` returning `nil`.
+- **Application Switching Watchdog**:
+  - Observe `NSWorkspace.didActivateApplicationNotification`.
+  - If an unauthorized app becomes active, immediately call `forceForeground()` (`NSApp.activate(ignoringOtherApps: true)` + `makeKeyAndOrderFront(nil)`) and invoke `onNavigationBlocked` (`reason: "minimize"`) on MethodChannel `ara_desktop/macos_kiosk`.
+- **Parity with Mobile Always-On Kiosk**:
+  - In `KioskSecurityService.initialize()`, engage `setMode(AssessmentMode.exam)` on startup for macOS (`Platform.isMacOS`).
+  - In `lib/main.dart`, do not constrain the window to 1366x768 on macOS (`waitUntilReadyToShow(null, ...)`).
 

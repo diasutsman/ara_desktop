@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:win32/win32.dart';
 import 'package:window_manager/window_manager.dart';
+import '../config/env_config.dart';
 
 enum AssessmentMode {
   normal,      // Browsing / Dashboard - No restrictions
@@ -36,6 +37,7 @@ class KioskSecurityService with WindowListener {
 
   static const MethodChannel _kioskHookChannel = MethodChannel('ara_desktop/kiosk_hook');
   static const MethodChannel _mobileChannel = MethodChannel('ara_desktop/mobile_kiosk');
+  static const MethodChannel _macChannel = MethodChannel('ara_desktop/macos_kiosk');
 
   AssessmentMode _currentMode = AssessmentMode.normal;
   AssessmentMode get currentMode => _currentMode;
@@ -57,6 +59,10 @@ class KioskSecurityService with WindowListener {
   final ValueNotifier<String?> securityAlertNotifier = ValueNotifier<String?>(null);
   VoidCallback? onRefreshRequested;
 
+  /// Callback invoked whenever a security/proctoring violation is detected in ARA Desktop/Mobile.
+  void Function(String violationType, String violationLabel, String description, String source)? onViolationDetected;
+  final Map<String, DateTime> _lastViolationEmitTimes = {};
+
   bool isManualOverride = false;
   final ValueNotifier<bool> manualOverrideNotifier = ValueNotifier<bool>(false);
 
@@ -64,6 +70,39 @@ class KioskSecurityService with WindowListener {
   int violationCount = 0;
   bool _hasRecordedCurrentPauseViolation = false;
   Timer? _alertClearTimer;
+
+  String get _platformSourceName {
+    if (kIsWeb) return 'web';
+    if (Platform.isWindows) return 'ara_desktop_windows';
+    if (Platform.isMacOS) return 'ara_desktop_macos';
+    if (Platform.isAndroid) return 'ara_desktop_android';
+    if (Platform.isIOS) return 'ara_desktop_ios';
+    return 'ara_desktop';
+  }
+
+  void _emitViolation(
+    String violationType,
+    String violationLabel,
+    String description, {
+    Duration cooldown = const Duration(seconds: 10),
+  }) {
+    final now = DateTime.now();
+    final lastTime = _lastViolationEmitTimes[violationType];
+    if (lastTime != null && now.difference(lastTime) < cooldown) {
+      return;
+    }
+    _lastViolationEmitTimes[violationType] = now;
+    try {
+      onViolationDetected?.call(
+        violationType,
+        violationLabel,
+        description,
+        _platformSourceName,
+      );
+    } catch (e) {
+      debugPrint('[KioskSecurityService] Error in onViolationDetected callback: $e');
+    }
+  }
 
   void _showSecurityAlert(String message, {Duration duration = const Duration(seconds: 3)}) {
     securityAlertNotifier.value = message;
@@ -79,18 +118,27 @@ class KioskSecurityService with WindowListener {
     isOfficeSessionActive = true;
     debugPrint('[KioskSecurityService] Office Session Started - App switching allowed for Office.');
     _syncMobileOfficeSession(true);
+    _syncMacOfficeSession(true);
   }
 
   void markOfficeSessionEnded() {
     isOfficeSessionActive = false;
     debugPrint('[KioskSecurityService] Office Session Ended.');
     _syncMobileOfficeSession(false);
+    _syncMacOfficeSession(false);
   }
 
   void _syncMobileOfficeSession(bool active) {
     if (kIsWeb || !(Platform.isAndroid || Platform.isIOS)) return;
     _mobileChannel.invokeMethod('setOfficeSession', {'active': active}).catchError((Object e) {
       debugPrint('[KioskSecurityService] Failed to sync Office session to mobile native: $e');
+    });
+  }
+
+  void _syncMacOfficeSession(bool active) {
+    if (kIsWeb || !Platform.isMacOS) return;
+    _macChannel.invokeMethod('setOfficeSession', {'active': active}).catchError((Object e) {
+      debugPrint('[KioskSecurityService] Failed to sync Office session to macOS native: $e');
     });
   }
 
@@ -121,6 +169,11 @@ class KioskSecurityService with WindowListener {
         final msg = 'PERINGATAN: Anda terdeteksi meninggalkan aplikasi ARA Assessment saat ujian! (Pelanggaran ke-$violationCount)';
         debugPrint('[KioskSecurityService] $msg');
         _showSecurityAlert(msg, duration: const Duration(seconds: 4));
+        _emitViolation(
+          'app_exit',
+          'Keluar / Minimize Aplikasi (ARA Desktop/Mobile)',
+          msg,
+        );
       }
     }
   }
@@ -147,6 +200,11 @@ class KioskSecurityService with WindowListener {
               'PERINGATAN: Anda terdeteksi meninggalkan aplikasi ARA Assessment saat ujian! Tombol Minimize / Home diblokir. (Pelanggaran ke-$violationCount)';
           debugPrint('[KioskSecurityService] $msg');
           _showSecurityAlert(msg, duration: const Duration(seconds: 4));
+          _emitViolation(
+            'app_exit',
+            'Keluar / Minimize Aplikasi (ARA Mobile)',
+            msg,
+          );
         }
         break;
 
@@ -156,6 +214,11 @@ class KioskSecurityService with WindowListener {
             'PERINGATAN: Mode Split-Screen / Multi-Window dilarang selama ujian! (Pelanggaran ke-$violationCount)';
         debugPrint('[KioskSecurityService] $msg');
         _showSecurityAlert(msg, duration: const Duration(seconds: 4));
+        _emitViolation(
+          'split_screen',
+          'Mode Split-Screen / Multi-Window',
+          msg,
+        );
         break;
 
       case 'screenshot':
@@ -164,6 +227,11 @@ class KioskSecurityService with WindowListener {
             'PERINGATAN: Tangkapan layar (Screenshot) dilarang selama sesi ujian! (Pelanggaran ke-$violationCount)';
         debugPrint('[KioskSecurityService] $msg');
         _showSecurityAlert(msg, duration: const Duration(seconds: 4));
+        _emitViolation(
+          'screenshot',
+          'Tangkapan Layar (Screenshot)',
+          msg,
+        );
         break;
 
       case 'screen_capture':
@@ -172,6 +240,11 @@ class KioskSecurityService with WindowListener {
             'PERINGATAN: Perekaman layar / Screen Mirroring dilarang selama sesi ujian! (Pelanggaran ke-$violationCount)';
         debugPrint('[KioskSecurityService] $msg');
         _showSecurityAlert(msg, duration: const Duration(seconds: 4));
+        _emitViolation(
+          'screen_capture',
+          'Perekaman Layar / Screen Mirroring',
+          msg,
+        );
         break;
     }
   }
@@ -207,20 +280,42 @@ class KioskSecurityService with WindowListener {
     debugPrint('[KioskSecurityService] Manual Mode Lock cleared. Auto-detection resumed.');
   }
 
-  // Allowed executables during development (case-insensitive) - Tools only, NO browsers!
+  // Allowed executables during development (case-insensitive) - Tools, IDEs, and Terminals
   static final Set<String> _devWhitelist = {
-    'taskmgr.exe',
+    // IDEs & Code Editors
     'code.exe',
     'cursor.exe',
     'idea64.exe',
+    'idea.exe',
+    'studio64.exe',
     'devenv.exe',
+    'notepad.exe',
+    'notepad++.exe',
+    'sublime_text.exe',
+    'atom.exe',
+    // System & Terminals
+    'taskmgr.exe',
     'cmd.exe',
     'powershell.exe',
     'pwsh.exe',
     'windowsterminal.exe',
     'wt.exe',
+    'bash.exe',
+    'git-bash.exe',
+    'wsl.exe',
+    // Runtimes & Dev Utilities
     'dart.exe',
     'flutter.exe',
+    'node.exe',
+    'python.exe',
+    'php.exe',
+    'postman.exe',
+    'insomnia.exe',
+    'fiddler.exe',
+    'wireshark.exe',
+    'dbeaver.exe',
+    'navicat.exe',
+    'heidisql.exe',
   };
 
   // Allowed executables in essay / utilities mode (case-insensitive)
@@ -276,7 +371,11 @@ class KioskSecurityService with WindowListener {
   }
 
   Future<void> initialize() async {
-    if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+    // Initialize dev mode and bypass lockdown state from EnvConfig
+    isDevMode = EnvConfig().isDevMode;
+    devBypassLockdown = EnvConfig().devBypassLockdown;
+
+    if (!kIsWeb && (Platform.isWindows || Platform.isLinux)) {
       windowManager.addListener(this);
       _ownProcessId = _getOwnProcessId();
 
@@ -293,6 +392,34 @@ class KioskSecurityService with WindowListener {
           onRefreshRequested?.call();
         }
       });
+    } else if (!kIsWeb && Platform.isMacOS) {
+      windowManager.addListener(this);
+      _macChannel.setMethodCallHandler((call) async {
+        if (call.method == 'onNavigationBlocked') {
+          final args = call.arguments;
+          String reason = 'minimize';
+          if (args is Map) {
+            reason = args['reason']?.toString() ?? 'minimize';
+          } else if (args is String) {
+            reason = args;
+          }
+          handleMobileBlockedNavigation(reason);
+        } else if (call.method == 'onOfficeLaunched') {
+          final app = call.arguments?.toString() ?? 'office';
+          debugPrint('[KioskSecurityService] macOS Office launched: $app');
+          if (_currentMode != AssessmentMode.normal) {
+            markOfficeSessionStarted();
+          }
+        } else if (call.method == 'onRefreshRequested') {
+          debugPrint('[KioskSecurityService] macOS Menu triggered refresh');
+          onRefreshRequested?.call();
+        }
+      });
+
+      // In production, initiate exam mode on startup. In dev mode, remain in normal mode.
+      if (!isDevMode) {
+        await setMode(AssessmentMode.exam);
+      }
     } else if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
       _mobileChannel.setMethodCallHandler((call) async {
         if (call.method == 'onNavigationBlocked') {
@@ -307,8 +434,10 @@ class KioskSecurityService with WindowListener {
         }
       });
 
-      // Always-On Kiosk Lockdown from startup on Android & iOS
-      await setMode(AssessmentMode.exam);
+      // In production, initiate exam mode on startup. In dev mode, remain in normal mode.
+      if (!isDevMode) {
+        await setMode(AssessmentMode.exam);
+      }
     }
   }
 
@@ -325,7 +454,7 @@ class KioskSecurityService with WindowListener {
     _stopWatchdog();
     await _setKioskHook(false);
     await _setWindowLock(false);
-    if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+    if (!kIsWeb && (Platform.isWindows || Platform.isLinux)) {
       try {
         await windowManager.setTitleBarStyle(TitleBarStyle.normal);
         await windowManager.setResizable(true);
@@ -338,6 +467,13 @@ class KioskSecurityService with WindowListener {
       } catch (e) {
         debugPrint('[KioskSecurityService] Error during exit cleanup: $e');
       }
+    } else if (!kIsWeb && Platform.isMacOS) {
+      try {
+        await _macChannel.invokeMethod('exitApp');
+      } catch (e) {
+        debugPrint('[KioskSecurityService] Error during macOS exit cleanup: $e');
+      }
+      exit(0);
     } else if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
       try {
         await _mobileChannel.invokeMethod('exitApp');
@@ -352,8 +488,9 @@ class KioskSecurityService with WindowListener {
 
   Future<void> toggleDevBypassLockdown() async {
     devBypassLockdown = !devBypassLockdown;
+    EnvConfig().devBypassLockdown = devBypassLockdown;
     debugPrint('[KioskSecurityService] devBypassLockdown is now: $devBypassLockdown');
-    if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+    if (!kIsWeb && (Platform.isWindows || Platform.isLinux)) {
       if (devBypassLockdown) {
         await _setKioskHook(false);
         await _setWindowLock(false);
@@ -380,6 +517,12 @@ class KioskSecurityService with WindowListener {
         }
         await windowManager.maximize();
         await windowManager.setAlwaysOnTop(false);
+      }
+    } else if (!kIsWeb && Platform.isMacOS) {
+      try {
+        await _macChannel.invokeMethod('setKioskLockdown', {'enabled': !devBypassLockdown});
+      } catch (e) {
+        debugPrint('[KioskSecurityService] Failed to toggle macOS kiosk lockdown: $e');
       }
     } else if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
       if (devBypassLockdown) {
@@ -413,9 +556,9 @@ class KioskSecurityService with WindowListener {
   }
 
   Future<void> setMode(AssessmentMode mode) async {
-    // On Android & iOS, Always-On Kiosk remains in AssessmentMode.exam unless
+    // On Android, iOS & macOS, Always-On Kiosk remains in AssessmentMode.exam unless
     // explicitly unlocked by a supervisor (isManualOverride) or devBypassLockdown.
-    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS || Platform.isMacOS)) {
       if (mode == AssessmentMode.normal) {
         if (isOfficeSessionActive) {
           markOfficeSessionEnded();
@@ -437,7 +580,7 @@ class KioskSecurityService with WindowListener {
 
     if (kIsWeb) return;
 
-    if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
+    if (Platform.isWindows || Platform.isLinux) {
       switch (mode) {
         case AssessmentMode.normal:
           await _setKioskHook(false);
@@ -461,8 +604,8 @@ class KioskSecurityService with WindowListener {
           // 1. Unhook Alt+Tab to allow switching between ARA, Word, Excel, and PowerPoint
           await _setKioskHook(false);
           // 2. Lock window controls so ARA cannot be closed, minimized, or resized (native WS_SYSMENU stripped)
-          await _setWindowLock(true);
           if (!devBypassLockdown) {
+            await _setWindowLock(true);
             await windowManager.setTitleBarStyle(TitleBarStyle.normal);
             await windowManager.setResizable(false);
             await windowManager.setMinimizable(false);
@@ -474,9 +617,38 @@ class KioskSecurityService with WindowListener {
             await windowManager.maximize();
             // Don't stay on top so Word, Excel, and PowerPoint can appear over ARA
             await windowManager.setAlwaysOnTop(false);
+            await windowManager.setPreventClose(!isDevMode);
+            _startWatchdog();
+          } else {
+            await _setWindowLock(false);
+            await windowManager.setTitleBarStyle(TitleBarStyle.normal);
+            await windowManager.setResizable(true);
+            await windowManager.setMinimizable(true);
+            await windowManager.setMaximizable(true);
+            await windowManager.setAlwaysOnTop(false);
+            await windowManager.setPreventClose(false);
+            _stopWatchdog();
           }
-          await windowManager.setPreventClose(!isDevMode || !devBypassLockdown);
-          _startWatchdog();
+          break;
+      }
+    } else if (Platform.isMacOS) {
+      switch (mode) {
+        case AssessmentMode.normal:
+          try {
+            await _macChannel.invokeMethod('setKioskLockdown', {'enabled': false});
+          } catch (e) {
+            debugPrint('[KioskSecurityService] Failed to unlock macOS kiosk: $e');
+          }
+          break;
+
+        case AssessmentMode.exam:
+        case AssessmentMode.strictExam:
+        case AssessmentMode.essayExam:
+          try {
+            await _macChannel.invokeMethod('setKioskLockdown', {'enabled': !devBypassLockdown});
+          } catch (e) {
+            debugPrint('[KioskSecurityService] Failed to lock macOS kiosk: $e');
+          }
           break;
       }
     } else if (Platform.isAndroid || Platform.isIOS) {
@@ -607,7 +779,11 @@ class KioskSecurityService with WindowListener {
 
     final lowerExe = processExe.toLowerCase();
 
-    if (isDevMode && isDevBypass && _devWhitelist.contains(lowerExe)) {
+    if (isDevMode && isDevBypass) {
+      return const SecurityPolicyEvaluation(WindowAction.allow, 'Dev mode bypass active');
+    }
+
+    if (isDevMode && _devWhitelist.contains(lowerExe)) {
       return const SecurityPolicyEvaluation(WindowAction.allow, 'Dev whitelist bypass');
     }
 
@@ -696,7 +872,8 @@ class KioskSecurityService with WindowListener {
   }
 
   void _blockUnauthorizedWindow(HWND hwnd, String exeName, String alertMessage) {
-    if (isDevMode && devBypassLockdown && _devWhitelist.contains(exeName.toLowerCase())) {
+    if (isDevMode && devBypassLockdown) {
+      debugPrint('[KioskSecurityService] [DEV MODE BYPASS] Window ($exeName) bypassed in dev mode.');
       return;
     }
 
@@ -723,6 +900,21 @@ class KioskSecurityService with WindowListener {
     // 4. Trigger UI warning alert
     securityAlertNotifier.value = alertMessage;
 
+    // 5. Emit violation with per-process cooldown so the 200ms watchdog doesn't spam
+    final throttleKey = 'unauthorized_app:${exeName.toLowerCase()}';
+    final now = DateTime.now();
+    final lastBlock = _lastViolationEmitTimes[throttleKey];
+    if (lastBlock == null || now.difference(lastBlock) >= const Duration(seconds: 10)) {
+      _lastViolationEmitTimes[throttleKey] = now;
+      violationCount++;
+      _emitViolation(
+        'unauthorized_app',
+        'Membuka Aplikasi Terlarang ($exeName)',
+        '$alertMessage (Proses: $exeName, Pelanggaran ke-$violationCount)',
+        cooldown: const Duration(seconds: 5),
+      );
+    }
+
     // Auto clear alert banner after 3 seconds
     Timer(const Duration(seconds: 3), () {
       if (securityAlertNotifier.value == alertMessage) {
@@ -745,7 +937,14 @@ class KioskSecurityService with WindowListener {
     }
 
     if (_currentMode != AssessmentMode.normal) {
-      securityAlertNotifier.value = 'Ujian sedang berlangsung! Aplikasi tidak dapat ditutup.';
+      const msg = 'Ujian sedang berlangsung! Aplikasi tidak dapat ditutup.';
+      securityAlertNotifier.value = msg;
+      violationCount++;
+      _emitViolation(
+        'app_exit',
+        'Percobaan Menutup Aplikasi Saat Ujian',
+        '$msg (Pelanggaran ke-$violationCount)',
+      );
       Timer(const Duration(seconds: 3), () {
         securityAlertNotifier.value = null;
       });

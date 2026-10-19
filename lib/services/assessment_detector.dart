@@ -12,6 +12,9 @@ class AssessmentDetector {
   /// Callback when supervisor panel is requested via in-page shortcut
   VoidCallback? onSupervisorRequested;
 
+  /// Latest user/exam context reported by the WebView DOM
+  final Map<String, String> lastExamContext = {};
+
   // JavaScript snippet injected into every web page loaded
   static const String injectedScript = """
     (function() {
@@ -19,6 +22,110 @@ class AssessmentDetector {
       window.setAraAssessmentMode = function(mode) {
         if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
           window.flutter_inappwebview.callHandler('onAssessmentStateChange', mode);
+        }
+      };
+
+      function resolvePortalBaseUrl() {
+        try {
+          var origin = window.location.origin || '';
+          var path = window.location.pathname || '';
+          if (path.indexOf('/new_ara') === 0) {
+            return origin + '/new_ara';
+          }
+          if (path.indexOf('/assess') === 0) {
+            return origin + '/assess';
+          }
+          var parts = path.split('/').filter(Boolean);
+          if (parts.length > 0 && ['login', 'home', 'exam', 'user', 'violation', 'dashboard', 'result'].indexOf(parts[0].toLowerCase()) === -1) {
+            return origin + '/' + parts[0];
+          }
+          return origin;
+        } catch (_) {
+          return '';
+        }
+      }
+
+      var lastContextSignature = '';
+      function syncExamContextFromDOM() {
+        try {
+          var userEl = document.getElementById('hid_user_id');
+          var examEl = document.getElementById('hid_exam_id');
+          var classEl = document.getElementById('hid_class_id');
+          var respEl = document.getElementById('hid_response');
+
+          var userID = (userEl && userEl.value) ? String(userEl.value).trim() : (localStorage.getItem('ara_last_user_id') || '');
+          var examID = (examEl && examEl.value) ? String(examEl.value).trim() : (localStorage.getItem('ara_last_exam_id') || '');
+          var classID = (classEl && classEl.value) ? String(classEl.value).trim() : (localStorage.getItem('ara_last_class_id') || '');
+          var responseID = (respEl && respEl.value) ? String(respEl.value).trim() : (localStorage.getItem('ara_last_response_id') || '');
+          var baseUrl = resolvePortalBaseUrl();
+
+          if (userEl && userEl.value) localStorage.setItem('ara_last_user_id', userID);
+          if (examEl && examEl.value) localStorage.setItem('ara_last_exam_id', examID);
+          if (classEl && classEl.value) localStorage.setItem('ara_last_class_id', classID);
+          if (respEl && respEl.value) localStorage.setItem('ara_last_response_id', responseID);
+          if (baseUrl) localStorage.setItem('ara_last_base_url', baseUrl);
+
+          var ctx = {
+            baseUrl: baseUrl || localStorage.getItem('ara_last_base_url') || '',
+            userID: userID,
+            examID: examID,
+            classID: classID,
+            responseID: responseID
+          };
+          var sig = JSON.stringify(ctx);
+          if (sig !== lastContextSignature) {
+            lastContextSignature = sig;
+            if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
+              window.flutter_inappwebview.callHandler('onExamContextUpdate', ctx);
+            }
+          }
+          return ctx;
+        } catch (_) {
+          return {};
+        }
+      }
+
+      // Global bridge called by ARA Desktop/Mobile native KioskSecurityService when a violation occurs
+      window.recordAraDesktopViolation = function(violationType, violationLabel, description, source) {
+        try {
+          if (typeof window.recordAraViolation === 'function') {
+            window.recordAraViolation(
+              violationType || 'app_exit',
+              violationLabel || 'Keluar dari Aplikasi',
+              description || '',
+              source || 'ara_desktop',
+              5000
+            );
+            return true;
+          }
+          var ctx = syncExamContextFromDOM();
+          var baseUrl = ctx.baseUrl || resolvePortalBaseUrl();
+          if (!baseUrl) return false;
+
+          var formData = new URLSearchParams();
+          if (ctx.userID) formData.append('userID', ctx.userID);
+          if (ctx.examID) formData.append('examID', ctx.examID);
+          if (ctx.classID) formData.append('classID', ctx.classID);
+          if (ctx.responseID) formData.append('responseID', ctx.responseID);
+          formData.append('violation_type', violationType || 'app_exit');
+          formData.append('violation_label', violationLabel || 'Keluar dari Aplikasi');
+          formData.append('description', description || '');
+          formData.append('source', source || 'ara_desktop');
+          formData.append('platform', navigator.userAgent || 'ara_desktop');
+
+          fetch(baseUrl.replace(/\\/\$/, '') + '/Violation/record', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+              'X-Requested-With': 'XMLHttpRequest'
+            },
+            body: formData.toString(),
+            credentials: 'same-origin',
+            keepalive: true
+          }).catch(function() {});
+          return true;
+        } catch (_) {
+          return false;
         }
       };
 
@@ -73,6 +180,7 @@ class AssessmentDetector {
 
       // Periodic DOM observer to detect essay indicators or exam buttons
       function detectStateFromDOM() {
+        syncExamContextFromDOM();
         var pathname = window.location.pathname.toLowerCase();
 
         // Check if on Landing, Login, Register, or Dashboard pages (Normal mode)
@@ -135,6 +243,21 @@ class AssessmentDetector {
     );
 
     controller.addJavaScriptHandler(
+      handlerName: 'onExamContextUpdate',
+      callback: (args) {
+        if (args.isNotEmpty && args[0] is Map) {
+          final map = Map<String, dynamic>.from(args[0] as Map);
+          map.forEach((key, value) {
+            if (value != null && value.toString().isNotEmpty) {
+              lastExamContext[key] = value.toString();
+            }
+          });
+          debugPrint('[AssessmentDetector] Updated exam context: $lastExamContext');
+        }
+      },
+    );
+
+    controller.addJavaScriptHandler(
       handlerName: 'onDevExitTrigger',
       callback: (args) {
         if (_kioskService.isDevMode) {
@@ -168,6 +291,8 @@ class AssessmentDetector {
     // 1. Normal / Landing / Login / Dashboard / Finished
     if (path == '' ||
         path == '/' ||
+        path == '/new_ara' ||
+        path == '/new_ara/' ||
         path == '/assess' ||
         path == '/assess/' ||
         path.contains('/login') ||
