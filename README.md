@@ -78,7 +78,19 @@ fvm flutter build windows --release
 Hasil build akan berada di:  
 `build/windows/x64/runner/Release/`
 
-### 6. Build iOS (wajib di Mac)
+### 6. Build Release macOS (.dmg Installer)
+Jalankan script otomatis untuk build release dan generate `.dmg` installer:
+```bash
+chmod +x scripts/build_macos.sh
+./scripts/build_macos.sh
+```
+Hasil installer `.dmg` akan berada di:  
+`build/macos/ARA_Assessment_<version>.dmg`
+
+> **Catatan Installer macOS**:
+> - Script otomatis menggunakan `create-dmg` (bila terinstal via `brew install create-dmg`) untuk tampilan drag-and-drop installer yang rapi, atau fallback otomatis ke native `hdiutil` bawaan macOS tanpa instal tool tambahan.
+
+### 7. Build iOS (wajib di Mac)
 iOS tidak dapat di-build dari Windows. Di Mac (Xcode terinstal), project memakai Swift Package Manager:
 ```bash
 fvm flutter build ios --no-codesign
