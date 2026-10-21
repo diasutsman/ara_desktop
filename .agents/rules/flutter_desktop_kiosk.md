@@ -107,9 +107,13 @@
 - **Application Switching Watchdog**:
   - Observe `NSWorkspace.didActivateApplicationNotification`.
   - If an unauthorized app becomes active, immediately call `forceForeground()` (`NSApp.activate(ignoringOtherApps: true)` + `makeKeyAndOrderFront(nil)`) and invoke `onNavigationBlocked` (`reason: "minimize"`) on MethodChannel `ara_desktop/macos_kiosk`.
-- **Parity with Mobile Always-On Kiosk**:
-  - In `KioskSecurityService.initialize()`, engage `setMode(AssessmentMode.exam)` on startup for macOS (`Platform.isMacOS`).
-  - In `lib/main.dart`, do not constrain the window to 1366x768 on macOS (`waitUntilReadyToShow(null, ...)`).
+- **macOS Desktop Window Lifecycle & Exam Parity**:
+  - macOS is a **Desktop platform** (parity with Windows), and MUST NOT be grouped with mobile (Android/iOS) into an "Always-On Kiosk" on application startup.
+  - On application startup (`awakeFromNib` in `MainFlutterWindow.swift`), macOS MUST initialize in **Normal mode** with `applyKioskMode(enabled: false)`, window style `[.titled, .closable, .miniaturizable, .resizable]`, window level `.normal`, and standard window dimensions (`1366x768` centered via `windowOptions` in `lib/main.dart`).
+  - In Normal mode (pre-exam, login, profile, KTP/face verification, dashboard), users MUST be able to close the app via the red traffic light button or `Cmd+Q`.
+  - The red `MODE UJIAN AKTIF` badge MUST NOT be displayed before entering an active exam route.
+  - Kiosk lockdown on macOS (`applyKioskMode(enabled: true)`) is engaged ONLY when the user navigates into an active exam route (`/ujian`, `/exam`, `/soal`, active timer).
+  - When returning to non-exam routes (`/dashboard`, `/profile`, `/selesai`), the application MUST seamlessly revert to Normal mode and restore standard window controls.
 
 ## 7. Development Mode & Proctoring Watchdog Invariants
 - **Preserving Proctoring During Dev Testing**:
