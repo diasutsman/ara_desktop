@@ -109,10 +109,10 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
       ::ShellExecuteW(nullptr, L"open", L"winword.exe", nullptr, nullptr, SW_SHOWNORMAL);
       NotifyOfficeAppLaunched("winword");
       return 0;
-    } else if (id == ID_MENU_EXCEL) {
-      ::ShellExecuteW(nullptr, L"open", L"excel.exe", nullptr, nullptr, SW_SHOWNORMAL);
-      NotifyOfficeAppLaunched("excel");
-      return 0;
+    // } else if (id == ID_MENU_EXCEL) {
+    //   ::ShellExecuteW(nullptr, L"open", L"excel.exe", nullptr, nullptr, SW_SHOWNORMAL);
+    //   NotifyOfficeAppLaunched("excel");
+    //   return 0;
     } else if (id == ID_MENU_POWERPOINT) {
       ::ShellExecuteW(nullptr, L"open", L"powerpnt.exe", nullptr, nullptr, SW_SHOWNORMAL);
       NotifyOfficeAppLaunched("powerpnt");

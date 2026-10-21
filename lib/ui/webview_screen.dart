@@ -530,7 +530,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                         ),
                         const Divider(color: Colors.white24, height: 24),
                         const Text(
-                          'Buka Aplikasi Utilities (Word, Excel, PPT):',
+                          'Buka Aplikasi Utilities (Word, PPT):',
                           style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600),
                         ),
                         const SizedBox(height: 8),
@@ -551,22 +551,22 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                                 },
                               ),
                             ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: ElevatedButton.icon(
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: const Color(0xFF217346),
-                                  foregroundColor: Colors.white,
-                                  padding: const EdgeInsets.symmetric(vertical: 8),
-                                ),
-                                icon: const Icon(Icons.table_chart, size: 16),
-                                label: const Text('Excel', style: TextStyle(fontSize: 12)),
-                                onPressed: () {
-                                  Navigator.pop(ctx);
-                                  _handleLaunchOffice('excel');
-                                },
-                              ),
-                            ),
+                            // const SizedBox(width: 8),
+                            // Expanded(
+                            //   child: ElevatedButton.icon(
+                            //     style: ElevatedButton.styleFrom(
+                            //       backgroundColor: const Color(0xFF217346),
+                            //       foregroundColor: Colors.white,
+                            //       padding: const EdgeInsets.symmetric(vertical: 8),
+                            //     ),
+                            //     icon: const Icon(Icons.table_chart, size: 16),
+                            //     label: const Text('Excel', style: TextStyle(fontSize: 12)),
+                            //     onPressed: () {
+                            //       Navigator.pop(ctx);
+                            //       _handleLaunchOffice('excel');
+                            //     },
+                            //   ),
+                            // ),
                             const SizedBox(width: 8),
                             Expanded(
                               child: ElevatedButton.icon(
@@ -1035,7 +1035,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
         ),
       ),
       child: PopupMenuButton<String>(
-        tooltip: 'Utilities (Word, Excel, PowerPoint)',
+        tooltip: 'Utilities (Word, PowerPoint)',
         offset: const Offset(0, 40),
         onSelected: _handleLaunchOffice,
         child: Container(
@@ -1079,16 +1079,16 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
               ],
             ),
           ),
-          const PopupMenuItem(
-            value: 'excel',
-            child: Row(
-              children: [
-                Icon(Icons.table_chart, color: Color(0xFF217346), size: 18),
-                SizedBox(width: 10),
-                Text('Microsoft Excel', style: TextStyle(color: Colors.white, fontSize: 13)),
-              ],
-            ),
-          ),
+          // const PopupMenuItem(
+          //   value: 'excel',
+          //   child: Row(
+          //     children: [
+          //       Icon(Icons.table_chart, color: Color(0xFF217346), size: 18),
+          //       SizedBox(width: 10),
+          //       Text('Microsoft Excel', style: TextStyle(color: Colors.white, fontSize: 13)),
+          //     ],
+          //   ),
+          // ),
           const PopupMenuItem(
             value: 'powerpoint',
             child: Row(
@@ -1251,7 +1251,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
           // Exam Mode Indicator Badge on Right
           if (isExam) ...[
             Tooltip(
-              message: 'Mode Ujian Aktif: Akses Word, Excel & PPT via Menu Utilities (Double-click untuk panel pengawas)',
+              message: 'Mode Ujian Aktif: Akses Word & PPT via Menu Utilities (Double-click untuk panel pengawas)',
               child: GestureDetector(
                 onDoubleTap: _showSupervisorDialog,
                 child: Container(
@@ -1304,7 +1304,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
         offset: const Offset(0, 26),
         onSelected: _handleLaunchOffice,
         child: const _DesktopHoverButton(
-          tooltip: 'Utilities (Word, Excel, PowerPoint)',
+          tooltip: 'Utilities (Word, PowerPoint)',
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -1343,24 +1343,24 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
               ],
             ),
           ),
-          const PopupMenuItem(
-            value: 'excel',
-            height: 36,
-            child: Row(
-              children: [
-                Icon(Icons.table_chart, color: Color(0xFF217346), size: 18),
-                SizedBox(width: 10),
-                Text(
-                  'Microsoft Excel',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w400,
-                  ),
-                ),
-              ],
-            ),
-          ),
+          // const PopupMenuItem(
+          //   value: 'excel',
+          //   height: 36,
+          //   child: Row(
+          //     children: [
+          //       Icon(Icons.table_chart, color: Color(0xFF217346), size: 18),
+          //       SizedBox(width: 10),
+          //       Text(
+          //         'Microsoft Excel',
+          //         style: TextStyle(
+          //           color: Colors.white,
+          //           fontSize: 12,
+          //           fontWeight: FontWeight.w400,
+          //         ),
+          //       ),
+          //     ],
+          //   ),
+          // ),
           const PopupMenuItem(
             value: 'powerpoint',
             height: 36,
