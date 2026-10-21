@@ -2,8 +2,8 @@ import Cocoa
 import FlutterMacOS
 
 class MainFlutterWindow: NSWindow {
-  /// Always-On Kiosk Lockdown flag for macOS
-  static var isKioskLocked: Bool = true
+  /// Kiosk Lockdown flag for macOS (active only during exam session)
+  static var isKioskLocked: Bool = false
   static var isOfficeSessionActive: Bool = false
   static var isExitingCleanly: Bool = false
 
@@ -22,9 +22,9 @@ class MainFlutterWindow: NSWindow {
 
     super.awakeFromNib()
 
-    // Enforce Kiosk Lockdown from application startup ("pas buka appnya")
+    // Start in Normal macOS window mode by default; Kiosk Lockdown engages only during active exam
     DispatchQueue.main.async { [weak self] in
-      self?.applyKioskMode(enabled: true)
+      self?.applyKioskMode(enabled: false)
     }
   }
 
@@ -138,9 +138,10 @@ class MainFlutterWindow: NSWindow {
       self.makeKeyAndOrderFront(nil)
       NSApp.activate(ignoringOtherApps: true)
     } else {
-      // Unlocked / normal mode (e.g. supervisor override)
+      // Unlocked / normal mode (e.g. supervisor override or before exam)
       NSApp.presentationOptions = []
       self.level = .normal
+      self.title = "ARA Assessment"
       self.styleMask = [.titled, .closable, .miniaturizable, .resizable]
       self.collectionBehavior = [.managed]
       if let screen = NSScreen.main {

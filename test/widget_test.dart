@@ -106,6 +106,32 @@ void main() {
       expect(kiosk.currentMode, AssessmentMode.normal);
     });
 
+    test('evaluateUrl recognizes profile, user, verification, and onboarding routes as normal', () {
+      detector.evaluateUrl('https://ara-assessment.com/user/profile');
+      expect(kiosk.currentMode, AssessmentMode.normal);
+
+      detector.evaluateUrl('https://ara-assessment.com/profile');
+      expect(kiosk.currentMode, AssessmentMode.normal);
+
+      detector.evaluateUrl('https://ara-assessment.com/verifikasi');
+      expect(kiosk.currentMode, AssessmentMode.normal);
+
+      detector.evaluateUrl('https://ara-assessment.com/user/password');
+      expect(kiosk.currentMode, AssessmentMode.normal);
+
+      detector.evaluateUrl('https://ara-assessment.com/user/log');
+      expect(kiosk.currentMode, AssessmentMode.normal);
+    });
+
+    test('evaluateUrl automatically reverts exam mode to normal when navigating to non-exam route', () {
+      detector.evaluateUrl('https://ara-assessment.com/ujian/mulai');
+      expect(kiosk.currentMode, AssessmentMode.exam);
+
+      // Navigating to profile or user dashboard reverts mode to normal
+      detector.evaluateUrl('https://ara-assessment.com/user/profile');
+      expect(kiosk.currentMode, AssessmentMode.normal);
+    });
+
     test('handleModeChange processes string triggers', () {
       detector.handleModeChange('strict');
       expect(kiosk.currentMode, AssessmentMode.exam);

@@ -13,8 +13,8 @@ void main() async {
   // Initialize environment configuration (.env)
   await EnvConfig().initialize();
 
-  // Initialize desktop window manager if running on Desktop
-  if (!kIsWeb && (Platform.isWindows || Platform.isLinux)) {
+  // Initialize desktop window manager if running on Desktop (Windows, macOS, Linux)
+  if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
     await windowManager.ensureInitialized();
 
     const windowOptions = WindowOptions(
@@ -27,12 +27,6 @@ void main() async {
     );
 
     await windowManager.waitUntilReadyToShow(windowOptions, () async {
-      await windowManager.show();
-      await windowManager.focus();
-    });
-  } else if (!kIsWeb && Platform.isMacOS) {
-    await windowManager.ensureInitialized();
-    await windowManager.waitUntilReadyToShow(null, () async {
       await windowManager.show();
       await windowManager.focus();
     });

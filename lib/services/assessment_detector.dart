@@ -183,7 +183,7 @@ class AssessmentDetector {
         syncExamContextFromDOM();
         var pathname = window.location.pathname.toLowerCase();
 
-        // Check if on Landing, Login, Register, or Dashboard pages (Normal mode)
+        // Check if on Landing, Login, Register, Dashboard, Profile, or Verification pages (Normal mode)
         var isNormal = pathname === '' ||
                        pathname === '/' ||
                        pathname === '/assess' ||
@@ -191,6 +191,20 @@ class AssessmentDetector {
                        pathname.indexOf('/login') !== -1 ||
                        pathname.indexOf('/register') !== -1 ||
                        pathname.indexOf('/dashboard') !== -1 ||
+                       pathname.indexOf('/profile') !== -1 ||
+                       pathname.indexOf('/user') !== -1 ||
+                       pathname.indexOf('/biodata') !== -1 ||
+                       pathname.indexOf('/verifikasi') !== -1 ||
+                       pathname.indexOf('/verification') !== -1 ||
+                       pathname.indexOf('/step') !== -1 ||
+                       pathname.indexOf('/instruksi') !== -1 ||
+                       pathname.indexOf('/instruction') !== -1 ||
+                       pathname.indexOf('/jadwal') !== -1 ||
+                       pathname.indexOf('/schedule') !== -1 ||
+                       pathname.indexOf('/password') !== -1 ||
+                       pathname.indexOf('/log') !== -1 ||
+                       pathname.indexOf('/account') !== -1 ||
+                       pathname.indexOf('/home') !== -1 ||
                        pathname.indexOf('/selesai') !== -1 ||
                        pathname.indexOf('/finish') !== -1;
 
@@ -203,7 +217,6 @@ class AssessmentDetector {
         var isExam = pathname.indexOf('/ujian') !== -1 ||
                      pathname.indexOf('/exam') !== -1 ||
                      pathname.indexOf('/soal') !== -1 ||
-                     pathname.indexOf('/test') !== -1 ||
                      pathname.indexOf('/cbt') !== -1 ||
                      pathname.indexOf('/quiz') !== -1 ||
                      pathname.indexOf('/mulai') !== -1 ||
@@ -219,8 +232,11 @@ class AssessmentDetector {
         var hasEssayEditor = document.getElementById('answerText') !== null ||
                              document.querySelector('.cke_editor_answerText') !== null;
 
-        if (isExam || isEssayRoute) {
+        if (isExam || isEssayRoute || hasEssayEditor) {
           reportMode('exam');
+        } else {
+          // Default to normal mode when not in an active exam session
+          reportMode('normal');
         }
       }
 
@@ -288,7 +304,7 @@ class AssessmentDetector {
     final path = uri.path.toLowerCase();
     debugPrint('[AssessmentDetector] Evaluated URL path: $path (full: $url)');
 
-    // 1. Normal / Landing / Login / Dashboard / Finished
+    // 1. Normal / Landing / Login / Dashboard / Profile / Verification / Finished
     if (path == '' ||
         path == '/' ||
         path == '/new_ara' ||
@@ -298,6 +314,21 @@ class AssessmentDetector {
         path.contains('/login') ||
         path.contains('/register') ||
         path.contains('/dashboard') ||
+        path.contains('/profile') ||
+        path.contains('/user') ||
+        path.contains('/biodata') ||
+        path.contains('/verifikasi') ||
+        path.contains('/verification') ||
+        path.contains('/step') ||
+        path.contains('/instruksi') ||
+        path.contains('/instruction') ||
+        path.contains('/jadwal') ||
+        path.contains('/schedule') ||
+        path.contains('/password') ||
+        path.contains('/log') ||
+        path.contains('/pelanggaran') ||
+        path.contains('/account') ||
+        path.contains('/home') ||
         path.contains('/selesai') ||
         path.contains('/finish')) {
       _kioskService.setMode(AssessmentMode.normal);
@@ -319,6 +350,11 @@ class AssessmentDetector {
         path.contains('/start')) {
       _kioskService.setMode(AssessmentMode.exam);
       return;
+    }
+
+    // 3. Safe fallback: Non-exam routes restore normal mode if currently in exam
+    if (_kioskService.currentMode != AssessmentMode.normal) {
+      _kioskService.setMode(AssessmentMode.normal);
     }
   }
 

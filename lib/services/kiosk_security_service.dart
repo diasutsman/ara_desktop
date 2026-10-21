@@ -415,11 +415,6 @@ class KioskSecurityService with WindowListener {
           onRefreshRequested?.call();
         }
       });
-
-      // In production, initiate exam mode on startup. In dev mode, remain in normal mode.
-      if (!isDevMode) {
-        await setMode(AssessmentMode.exam);
-      }
     } else if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
       _mobileChannel.setMethodCallHandler((call) async {
         if (call.method == 'onNavigationBlocked') {
@@ -556,9 +551,10 @@ class KioskSecurityService with WindowListener {
   }
 
   Future<void> setMode(AssessmentMode mode) async {
-    // On Android, iOS & macOS, Always-On Kiosk remains in AssessmentMode.exam unless
+    // On mobile (Android & iOS), Always-On Kiosk remains in AssessmentMode.exam unless
     // explicitly unlocked by a supervisor (isManualOverride) or devBypassLockdown.
-    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS || Platform.isMacOS)) {
+    // Desktop (Windows & macOS) freely transitions between normal and exam modes based on route.
+    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
       if (mode == AssessmentMode.normal) {
         if (isOfficeSessionActive) {
           markOfficeSessionEnded();
@@ -636,6 +632,8 @@ class KioskSecurityService with WindowListener {
         case AssessmentMode.normal:
           try {
             await _macChannel.invokeMethod('setKioskLockdown', {'enabled': false});
+            await windowManager.setPreventClose(false);
+            await windowManager.setAlwaysOnTop(false);
           } catch (e) {
             debugPrint('[KioskSecurityService] Failed to unlock macOS kiosk: $e');
           }
@@ -646,6 +644,7 @@ class KioskSecurityService with WindowListener {
         case AssessmentMode.essayExam:
           try {
             await _macChannel.invokeMethod('setKioskLockdown', {'enabled': !devBypassLockdown});
+            await windowManager.setPreventClose(!isDevMode);
           } catch (e) {
             debugPrint('[KioskSecurityService] Failed to lock macOS kiosk: $e');
           }
