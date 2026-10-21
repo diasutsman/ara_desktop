@@ -57,9 +57,9 @@ STAGING_DIR=$(mktemp -d /tmp/ara_dmg_staging.XXXXXX)
 cp -R "$APP_BUNDLE" "$STAGING_DIR/$APP_NAME.app"
 ln -s /Applications "$STAGING_DIR/Applications"
 
-# Check if create-dmg is installed for an automated styled installer window
+# Try create-dmg for an automated styled installer window if available
 if command -v create-dmg >/dev/null 2>&1; then
-  echo "==> Using create-dmg for styled installer..."
+  echo "==> Attempting create-dmg for styled installer..."
   create-dmg \
     --volname "$APP_NAME" \
     --window-pos 200 120 \
@@ -71,10 +71,13 @@ if command -v create-dmg >/dev/null 2>&1; then
     --no-internet-enable \
     "$FINAL_DMG" \
     "$STAGING_DIR" || {
-      echo "create-dmg encountered a warning, verifying DMG output..."
+      echo "Notice: create-dmg encountered an AppleScript/Finder timeout or remote display issue."
     }
-else
-  echo "==> 'create-dmg' not installed (optional). Using native macOS 'hdiutil'..."
+fi
+
+# 100% reliable fallback: if create-dmg wasn't installed or failed, use native macOS hdiutil
+if [ ! -f "$FINAL_DMG" ]; then
+  echo "==> Packaging DMG using native macOS 'hdiutil' (100% reliable)..."
   hdiutil create -volname "$APP_NAME" \
     -srcfolder "$STAGING_DIR" \
     -ov -format UDZO \
