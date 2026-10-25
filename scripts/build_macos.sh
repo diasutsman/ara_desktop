@@ -68,6 +68,16 @@ fi
 
 echo "==> Found App bundle at: $APP_BUNDLE"
 
+# Verify binary architectures (crucial for Intel x86_64 vs Apple Silicon arm64 compatibility)
+EXECUTABLE=$(find "$APP_BUNDLE/Contents/MacOS" -type f -perm +111 2>/dev/null | head -n 1)
+if [ -z "$EXECUTABLE" ]; then
+  EXECUTABLE=$(find "$APP_BUNDLE/Contents/MacOS" -type f | head -n 1)
+fi
+if [ -n "$EXECUTABLE" ]; then
+  echo "==> Verifying binary architecture compatibility:"
+  lipo -info "$EXECUTABLE" 2>/dev/null || file "$EXECUTABLE"
+fi
+
 mkdir -p "$OUTPUT_DIR"
 FINAL_DMG="$OUTPUT_DIR/${DMG_NAME}.dmg"
 rm -f "$FINAL_DMG"
@@ -143,11 +153,11 @@ if [ -f "$FINAL_DMG" ]; then
   echo " Output: $FINAL_DMG"
   echo "=========================================================="
   echo ""
-  echo "NOTE for macOS Gatekeeper (if downloaded from Internet):"
-  echo "1. Drag '$APP_NAME' to /Applications"
+  echo "NOTE for macOS Gatekeeper (especially on macOS Sequoia 15+):"
+  echo "1. Drag '$APP_NAME' to /Applications (DO NOT run inside DMG)"
   echo "2. If macOS says 'is damaged and can\'t be opened' or blocks it:"
-  echo "   Run in Terminal: xattr -cr '/Applications/$APP_NAME.app'"
-  echo "   OR: Right-click '$APP_NAME.app' -> Open -> Open"
+  echo "   [RECOMMENDED] Run in Terminal: xattr -cr '/Applications/$APP_NAME.app'"
+  echo "   [OR VIA SETTINGS] System Settings -> Privacy & Security -> Security -> Click 'Open Anyway'"
   echo "=========================================================="
 else
   echo "ERROR: DMG was not found at $FINAL_DMG"
