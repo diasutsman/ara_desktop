@@ -57,6 +57,16 @@ STAGING_DIR=$(mktemp -d /tmp/ara_dmg_staging.XXXXXX)
 cp -R "$APP_BUNDLE" "$STAGING_DIR/$APP_NAME.app"
 ln -s /Applications "$STAGING_DIR/Applications"
 
+echo "==> Enforcing executable permissions and code signature..."
+chmod -R 755 "$STAGING_DIR/$APP_NAME.app"
+chmod +x "$STAGING_DIR/$APP_NAME.app/Contents/MacOS/"*
+
+# Remove any quarantine attributes from staging files
+xattr -cr "$STAGING_DIR/$APP_NAME.app"
+
+# Re-sign the renamed .app ad-hoc so code signature integrity is preserved for Gatekeeper
+codesign --force --deep --sign - "$STAGING_DIR/$APP_NAME.app"
+
 # Try create-dmg for an automated styled installer window if available
 if command -v create-dmg >/dev/null 2>&1; then
   echo "==> Attempting create-dmg for styled installer..."
