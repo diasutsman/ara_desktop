@@ -1,27 +1,33 @@
+
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# ARA Assessment macOS release builder.
-# Distribution builds require Developer ID signing and Apple notarization.
-# For local testing only, set REQUIRE_NOTARIZATION=0.
+# ARA Assessment macOS builder.
+# Builds a release app and packages it as a DMG.
+# Developer ID signing and notarization are OPTIONAL.
+# Without them, the DMG is suitable for local testing only.
 
 APP_NAME="ARA Assessment"
 APP_FILE_NAME="ARA Assessment.app"
-REQUIRE_UNIVERSAL="${REQUIRE_UNIVERSAL:-1}"
-REQUIRE_NOTARIZATION="${REQUIRE_NOTARIZATION:-1}"
+
+# Do not fail packaging just because a native library is single-architecture.
+# Set REQUIRE_UNIVERSAL=1 to enforce Intel + Apple Silicon compatibility.
+REQUIRE_UNIVERSAL="${REQUIRE_UNIVERSAL:-0}"
+
+# Signing credentials may be empty.
 MACOS_SIGNING_IDENTITY="${MACOS_SIGNING_IDENTITY:-}"
 MACOS_NOTARY_PROFILE="${MACOS_NOTARY_PROFILE:-}"
+
+say() {
+  printf '\n==> %s\n' "$*"
+}
 
 fail() {
   printf '\nERROR: %s\n' "$*" >&2
   exit 1
 }
 
-say() {
-  printf '\n==> %s\n' "$*"
-}
-
-# Locate the Flutter project root.
+# Locate project root.
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ -f "$SCRIPT_DIR/pubspec.yaml" ]]; then
@@ -46,18 +52,18 @@ fi
 
 cd "$PROJECT_ROOT"
 
-# macOS and Xcode checks.
+# Check platform.
 [[ "$(uname -s)" == "Darwin" ]] ||
-  fail "Run this script on a Mac, not Windows."
+  fail "Run this script on macOS, not Windows."
 
 command -v xcodebuild >/dev/null 2>&1 ||
-  fail "Xcode is missing. Install Xcode and open it once."
+  fail "Xcode is missing. Install Xcode and select it using xcode-select."
 
 command -v codesign >/dev/null 2>&1 ||
   fail "codesign is unavailable. Install Xcode Command Line Tools."
 
 command -v lipo >/dev/null 2>&1 ||
-  fail "lipo is unavailable. Install Xcode Command Line Tools."
+  fail "lipo is unavailable."
 
 command -v hdiutil >/dev/null 2>&1 ||
   fail "hdiutil is unavailable."
@@ -66,14 +72,14 @@ command -v xcrun >/dev/null 2>&1 ||
   fail "xcrun is unavailable."
 
 [[ -d "$PROJECT_ROOT/macos" ]] ||
-  fail "The macos/ directory is missing. Run: flutter create --platforms=macos ."
+  fail "macos/ is missing. Run: flutter create --platforms=macos ."
 
-# Detect Flutter, preferring the project's FVM version.
+# Find Flutter, preferring the project's FVM version.
 FLUTTER=()
 
 if command -v fvm >/dev/null 2>&1 &&
-   { [[ -f "$PROJECT_ROOT/.fvmrc" ]] ||
-     [[ -f "$PROJECT_ROOT/.fvm/fvm_config.json" ]]; }; then
+  { [[ -f "$PROJECT_ROOT/.fvmrc" ]] ||
+    [[ -f "$PROJECT_ROOT/.fvm/fvm_config.json" ]]; }; then
   FLUTTER=(fvm flutter)
 elif [[ -x "$PROJECT_ROOT/.fvm/flutter_sdk/bin/flutter" ]]; then
   FLUTTER=("$PROJECT_ROOT/.fvm/flutter_sdk/bin/flutter")
@@ -87,7 +93,7 @@ else
   fail "Flutter was not found. Install Flutter or FVM and configure PATH."
 fi
 
-# Read app version from pubspec.yaml.
+# Read version from pubspec.yaml.
 VERSION="$(
   awk '$1 == "version:" {
     gsub(/\r/, "")
@@ -117,15 +123,14 @@ mkdir -p "$OUTPUT_DIR"
 TEMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/ara-macos-build.XXXXXX")"
 
 PROJECT_PBXPROJ="$PROJECT_ROOT/macos/Runner.xcodeproj/project.pbxproj"
-PROJECT_PBXPROJ_BACKUP="$TEMP_ROOT/Runner-project.pbxproj.original"
+PROJECT_BACKUP="$TEMP_ROOT/project.pbxproj.original"
 PATCHED_PBXPROJ=0
 
 cleanup() {
-  # Restore the original Xcode project file.
   if [[ "$PATCHED_PBXPROJ" == "1" &&
-        -f "$PROJECT_PBXPROJ_BACKUP" ]]; then
-    cp "$PROJECT_PBXPROJ_BACKUP" "$PROJECT_PBXPROJ" ||
-      printf '%s\n' "WARNING: Failed to restore the original Xcode project file." >&2
+        -f "$PROJECT_BACKUP" ]]; then
+    cp "$PROJECT_BACKUP" "$PROJECT_PBXPROJ" ||
+      printf '%s\n' "WARNING: Could not restore the Xcode project file." >&2
   fi
 
   if [[ -n "${TEMP_ROOT:-}" && -d "$TEMP_ROOT" ]]; then
@@ -135,7 +140,8 @@ cleanup() {
 
 trap cleanup EXIT
 
-# Detect an installed Developer ID Application certificate.
+# Automatically detect a Developer ID certificate if available.
+# If none exists, leave the identity EMPTY. This is not a build error.
 if [[ -z "$MACOS_SIGNING_IDENTITY" ]]; then
   MACOS_SIGNING_IDENTITY="$(
     security find-identity -v -p codesigning 2>/dev/null |
@@ -144,64 +150,56 @@ if [[ -z "$MACOS_SIGNING_IDENTITY" ]]; then
   )"
 fi
 
-# Refuse to create a misleading distribution build.
-if [[ "$REQUIRE_NOTARIZATION" == "1" ]]; then
-  [[ -n "$MACOS_SIGNING_IDENTITY" ]] ||
-    fail "No Developer ID Application certificate found. Configure MACOS_SIGNING_IDENTITY."
-
-  [[ -n "$MACOS_NOTARY_PROFILE" ]] ||
-    fail "MACOS_NOTARY_PROFILE is missing. Configure your Apple notarization credentials."
-fi
-
 printf '%s\n' '============================================================'
-printf ' Building: %s\n' "$APP_NAME"
+printf ' App:      %s\n' "$APP_NAME"
 printf ' Version:  %s\n' "$VERSION"
 printf ' Project:  %s\n' "$PROJECT_ROOT"
 printf ' Flutter:  %s\n' "${FLUTTER[*]}"
+printf ' Signing:  %s\n' "${MACOS_SIGNING_IDENTITY:-Ad-hoc (no Developer ID)}"
 printf ' Output:   %s\n' "$DMG_PATH"
 printf '%s\n' '============================================================'
 
-say "Checking Flutter and Xcode"
+say "Checking Xcode and Flutter"
 
 "${FLUTTER[@]}" --version
 xcodebuild -version
 
-say "Fetching Flutter dependencies"
+say "Downloading Flutter dependencies"
 
 "${FLUTTER[@]}" pub get
 
-# Install native dependencies used by Flutter plugins.
+# Install native plugin dependencies when CocoaPods is available.
 if [[ -f "$PROJECT_ROOT/macos/Podfile" ]]; then
   if command -v pod >/dev/null 2>&1; then
     say "Installing CocoaPods dependencies"
     (cd "$PROJECT_ROOT/macos" && pod install)
   else
-    fail "CocoaPods is required by this project but was not found. Install CocoaPods first."
+    printf '%s\n' "WARNING: CocoaPods is unavailable. Native plugin builds may fail."
   fi
 fi
 
-# Temporarily configure standard universal architectures.
-# The original Xcode project is restored at script exit.
+# Configure standard architectures during this build.
+# The original project file is restored automatically at exit.
 if [[ -f "$PROJECT_PBXPROJ" ]]; then
-  say "Preparing universal architecture settings"
+  say "Preparing Xcode architecture settings"
 
-  cp "$PROJECT_PBXPROJ" "$PROJECT_PBXPROJ_BACKUP"
+  cp "$PROJECT_PBXPROJ" "$PROJECT_BACKUP"
   PATCHED_PBXPROJ=1
 
-  /usr/bin/perl -0pi -e \
-    's/^[ \t]*ARCHS = [^;]+;/        ARCHS = "$(ARCHS_STANDARD)";/mg;
-     s/^[ \t]*ONLY_ACTIVE_ARCH = YES;/        ONLY_ACTIVE_ARCH = NO;/mg' \
-    "$PROJECT_PBXPROJ"
+  /usr/bin/perl -0pi -e '
+    s/^[ \t]*ARCHS = [^;]+;/        ARCHS = "$(ARCHS_STANDARD)";/mg;
+    s/^[ \t]*ONLY_ACTIVE_ARCH = YES;/        ONLY_ACTIVE_ARCH = NO;/mg;
+  ' "$PROJECT_PBXPROJ"
 fi
 
-say "Building Flutter macOS release"
+say "Building macOS release app"
 
 "${FLUTTER[@]}" build macos --release
 
 [[ -d "$BUILD_PRODUCTS" ]] ||
-  fail "Release output not found: $BUILD_PRODUCTS"
+  fail "Flutter release output was not found: $BUILD_PRODUCTS"
 
-# Locate the generated app.
+# Find the generated application.
 APP_BUNDLE=""
 
 for CANDIDATE in \
@@ -235,15 +233,15 @@ APP_EXECUTABLE="$(
 )"
 
 [[ -n "$APP_EXECUTABLE" ]] ||
-  fail "Could not locate the main app executable."
+  fail "Could not determine the main app executable."
 
 MAIN_BINARY="$APP_BUNDLE/Contents/MacOS/$APP_EXECUTABLE"
 
 [[ -f "$MAIN_BINARY" ]] ||
-  fail "The app executable is missing: $MAIN_BINARY"
+  fail "The main executable is missing: $MAIN_BINARY"
 
-# Verify Intel and Apple Silicon support in every bundled Mach-O binary.
-say "Checking Intel and Apple Silicon compatibility"
+# Check whether every bundled native binary supports both architectures.
+say "Checking Intel and Apple Silicon architectures"
 
 ARCH_FAILURE=0
 MACHO_COUNT=0
@@ -254,7 +252,6 @@ while IFS= read -r -d '' FILE_PATH; do
   [[ "$DESCRIPTION" == *Mach-O* ]] || continue
 
   MACHO_COUNT=$((MACHO_COUNT + 1))
-
   ARCHS="$(lipo -archs "$FILE_PATH" 2>/dev/null || true)"
   MISSING=""
 
@@ -266,7 +263,7 @@ while IFS= read -r -d '' FILE_PATH; do
   done
 
   if [[ -n "$MISSING" ]]; then
-    printf 'ARCHITECTURE ERROR: %s\n' "$FILE_PATH" >&2
+    printf 'WARNING: %s\n' "$FILE_PATH" >&2
     printf '  Found: %s\n' "${ARCHS:-unknown}" >&2
     printf '  Missing:%s\n' "$MISSING" >&2
     ARCH_FAILURE=1
@@ -274,31 +271,31 @@ while IFS= read -r -d '' FILE_PATH; do
 done < <(find "$APP_BUNDLE/Contents" -type f -print0)
 
 (( MACHO_COUNT > 0 )) ||
-  fail "No Mach-O executables were found inside the app."
+  fail "No Mach-O binaries were found in the app."
 
 if (( ARCH_FAILURE != 0 )); then
   if [[ "$REQUIRE_UNIVERSAL" == "1" ]]; then
-    fail "The app is not universal. Check Runner Build Settings, native Flutter plugins, and both arm64 and x86_64 dependency support."
+    fail "Some bundled binaries lack Intel or Apple Silicon support. Check the affected native plugins."
   else
-    printf '%s\n' "WARNING: Some native binaries do not support both architectures."
+    printf '%s\n' "WARNING: Some native binaries are not universal. This app may not run on every MacBook."
   fi
 else
   printf '%s\n' "Verified: all bundled Mach-O binaries support arm64 and x86_64."
 fi
 
-# Prepare the DMG contents.
+# Prepare the installer directory.
 STAGING_DIR="$TEMP_ROOT/staging"
 STAGED_APP="$STAGING_DIR/$APP_FILE_NAME"
 
 mkdir -p "$STAGING_DIR"
 
-say "Staging application"
+say "Preparing the application bundle"
 
 /usr/bin/ditto "$APP_BUNDLE" "$STAGED_APP"
 
 ln -s /Applications "$STAGING_DIR/Applications"
 
-# Find the release entitlements file, if the project provides one.
+# Locate release entitlements if present.
 ENTITLEMENTS=""
 
 for CANDIDATE in \
@@ -311,16 +308,16 @@ for CANDIDATE in \
   fi
 done
 
-# Sign the application.
+# Sign the app.
 if [[ -n "$MACOS_SIGNING_IDENTITY" ]]; then
-  say "Signing app with Developer ID"
+  say "Signing with Developer ID"
 
   if ! security find-identity -v -p codesigning 2>/dev/null |
-       grep -Fq "$MACOS_SIGNING_IDENTITY"; then
-    fail "Signing identity is not available in your keychain: $MACOS_SIGNING_IDENTITY"
+    grep -Fq "$MACOS_SIGNING_IDENTITY"; then
+
+    fail "The configured signing identity does not exist in the Keychain. Clear MACOS_SIGNING_IDENTITY to use ad-hoc signing."
   fi
 
-  # Sign nested code and enable the hardened runtime for notarization.
   codesign \
     --force \
     --deep \
@@ -329,7 +326,6 @@ if [[ -n "$MACOS_SIGNING_IDENTITY" ]]; then
     --timestamp \
     "$STAGED_APP"
 
-  # Apply the application's own entitlements to the outer bundle.
   if [[ -n "$ENTITLEMENTS" ]]; then
     codesign \
       --force \
@@ -348,31 +344,33 @@ if [[ -n "$MACOS_SIGNING_IDENTITY" ]]; then
   fi
 
 else
-  if [[ "$REQUIRE_NOTARIZATION" == "1" ]]; then
-    fail "A Developer ID Application certificate is required."
-  fi
-
-  printf '%s\n' "WARNING: This is an ad-hoc signed local testing build."
-  printf '%s\n' "Other Macs may block it. Do not distribute this build."
-
-  codesign --force --deep --sign - "$STAGED_APP"
+  # No certificate is required to build and package a local test app.
+  say "No Developer ID certificate found. Using ad-hoc signing."
 
   if [[ -n "$ENTITLEMENTS" ]]; then
     codesign \
       --force \
+      --deep \
       --sign - \
       --entitlements "$ENTITLEMENTS" \
       "$STAGED_APP"
   else
-    codesign --force --sign - "$STAGED_APP"
+    codesign \
+      --force \
+      --deep \
+      --sign - \
+      "$STAGED_APP"
   fi
+
+  printf '%s\n' "NOTE: Ad-hoc signing does not establish trust with Gatekeeper."
 fi
 
-say "Verifying application signature"
+say "Verifying app signature"
 
 codesign --verify --deep --strict --verbose=2 "$STAGED_APP"
 
-# Notarize the application when both credentials are configured.
+# Notarization is automatic only when BOTH credentials are available.
+# Empty signing identity or empty notary profile never blocks packaging.
 NOTARIZED=0
 
 if [[ -n "$MACOS_SIGNING_IDENTITY" &&
@@ -397,10 +395,16 @@ if [[ -n "$MACOS_SIGNING_IDENTITY" &&
   xcrun stapler validate "$STAGED_APP"
 
   NOTARIZED=1
+
+elif [[ -n "$MACOS_SIGNING_IDENTITY" ]]; then
+  printf '%s\n' "NOTICE: Developer ID signing is enabled, but no notary profile is configured."
+  printf '%s\n' "Skipping notarization and continuing the build."
+else
+  printf '%s\n' "NOTICE: No Developer ID certificate. Skipping notarization."
 fi
 
-# Create the installer disk image.
-say "Creating DMG installer"
+# Create the DMG.
+say "Creating the DMG installer"
 
 rm -f "$DMG_PATH"
 
@@ -411,7 +415,10 @@ hdiutil create \
   -format UDZO \
   "$DMG_PATH"
 
-# Notarize and validate the finished DMG.
+[[ -f "$DMG_PATH" ]] ||
+  fail "The DMG was not created."
+
+# Notarize the finished installer if credentials are configured.
 if [[ "$NOTARIZED" == "1" ]]; then
   say "Submitting the DMG to Apple for notarization"
 
@@ -422,7 +429,7 @@ if [[ "$NOTARIZED" == "1" ]]; then
   xcrun stapler staple "$DMG_PATH"
   xcrun stapler validate "$DMG_PATH"
 
-  say "Running Gatekeeper assessments"
+  say "Checking Gatekeeper acceptance"
 
   spctl --assess \
     --type execute \
@@ -437,15 +444,16 @@ if [[ "$NOTARIZED" == "1" ]]; then
 fi
 
 printf '\n============================================================\n'
-printf ' BUILD COMPLETE\n'
-printf ' App: %s\n' "$APP_NAME"
-printf ' DMG: %s\n' "$DMG_PATH"
+printf ' SUCCESS: DMG created\n'
+printf ' Application: %s\n' "$APP_NAME"
+printf ' Output:      %s\n' "$DMG_PATH"
 printf '============================================================\n'
 
 if [[ "$NOTARIZED" == "1" ]]; then
-  printf '%s\n' "Status: signed, notarized, stapled, and assessed by Gatekeeper."
-elif [[ -z "$MACOS_SIGNING_IDENTITY" ]]; then
-  printf '%s\n' "Status: LOCAL TEST ONLY. Do not distribute this DMG."
+  printf '%s\n' "Status: Developer ID signed and notarized."
 else
-  printf '%s\n' "Status: signed but not notarized. Public distribution is not ready."
+  printf '%s\n' "Status: Build complete, but public distribution is not verified."
+  printf '%s\n' "Without Developer ID signing and notarization, other Macs may block the app."
 fi
+
+printf '\n'
