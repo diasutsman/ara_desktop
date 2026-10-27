@@ -34,5 +34,14 @@
 	<string>Aplikasi memerlukan izin kamera untuk monitoring dan verifikasi wajah peserta ujian ARA Assessment.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Aplikasi memerlukan izin mikrofon untuk proctoring ujian ARA Assessment.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+		<key>NSAllowsArbitraryLoadsInWebContent</key>
+		<true/>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 </dict>
 </plist>

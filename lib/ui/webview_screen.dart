@@ -30,6 +30,8 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
   double _loadProgress = 0.0;
   bool _hasError = false;
   String _errorMessage = '';
+  bool _hasLoadedSuccessfully = false;
+  int _autoRetryCount = 0;
 
   final FocusNode _keyboardFocusNode = FocusNode();
   bool _isSupervisorDialogOpen = false;
@@ -142,22 +144,85 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
     }
   }
 
-  void _handleRefresh() {
+  bool _isLocalOrPrivateHost(String host) {
+    final normalized = host.trim().toLowerCase();
+    if (normalized.isEmpty) return false;
+    if (normalized == 'localhost' ||
+        normalized == '127.0.0.1' ||
+        normalized == '::1' ||
+        normalized == '0.0.0.0' ||
+        normalized.endsWith('.local') ||
+        normalized.endsWith('.test') ||
+        normalized.endsWith('.internal')) {
+      return true;
+    }
+    if (normalized.startsWith('10.') || normalized.startsWith('192.168.')) {
+      return true;
+    }
+    final parts = normalized.split('.');
+    if (parts.length == 4 && parts[0] == '172') {
+      final secondOctet = int.tryParse(parts[1]);
+      if (secondOctet != null && secondOctet >= 16 && secondOctet <= 31) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  Future<void> _reloadOrLoadTargetUrl({bool forceLoadUrl = false}) async {
     if (!mounted) return;
-    debugPrint('[WebViewScreen] Refreshing page...');
+    final hadError = _hasError;
     setState(() {
       _hasError = false;
+      _errorMessage = '';
       _isLoading = true;
+      _loadProgress = 0.0;
     });
-    _webViewController?.reload();
+
+    final controller = _webViewController;
+    if (controller == null) return;
+
+    final fallbackUrl = EnvConfig().currentUrl;
+    try {
+      final currentUri = await controller.getUrl();
+      final currentUrlStr = currentUri?.toString().trim() ?? '';
+      final hasCommittedUrl = currentUrlStr.isNotEmpty &&
+          currentUrlStr != 'about:blank' &&
+          (currentUrlStr.startsWith('http://') || currentUrlStr.startsWith('https://'));
+
+      if (forceLoadUrl || hadError || !_hasLoadedSuccessfully || !hasCommittedUrl) {
+        final targetToLoad = hasCommittedUrl && !forceLoadUrl ? currentUrlStr : fallbackUrl;
+        debugPrint('[WebViewScreen] Loading URL directly: $targetToLoad');
+        await controller.loadUrl(
+          urlRequest: URLRequest(url: WebUri(targetToLoad)),
+        );
+      } else {
+        debugPrint('[WebViewScreen] Reloading current committed page: $currentUrlStr');
+        await controller.reload();
+      }
+    } catch (e) {
+      debugPrint('[WebViewScreen] Reload failed ($e), falling back to loadUrl($fallbackUrl)');
+      await controller.loadUrl(
+        urlRequest: URLRequest(url: WebUri(fallbackUrl)),
+      );
+    }
+  }
+
+  void _handleRefresh() {
+    _autoRetryCount = 0;
+    unawaited(_reloadOrLoadTargetUrl(forceLoadUrl: _hasError || !_hasLoadedSuccessfully));
   }
 
   Future<void> _switchTargetServer(AppTargetMode newMode) async {
     if (EnvConfig().targetMode == newMode) return;
+    _autoRetryCount = 0;
+    _hasLoadedSuccessfully = false;
     setState(() {
       EnvConfig().targetMode = newMode;
       _isLoading = true;
+      _loadProgress = 0.0;
       _hasError = false;
+      _errorMessage = '';
     });
     final targetUrl = EnvConfig().currentUrl;
     debugPrint('[WebViewScreen] Switching target server to ${newMode.name.toUpperCase()}: $targetUrl');
@@ -210,9 +275,10 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
 
   bool _handleGlobalKeyEvent(KeyEvent event) {
     if (event is KeyDownEvent) {
-      // Refresh hotkeys: F5 or Ctrl+R
+      // Refresh hotkeys: F5, Ctrl+R, or Cmd+R (macOS)
       if (event.logicalKey == LogicalKeyboardKey.f5 ||
-          (HardwareKeyboard.instance.isControlPressed && event.logicalKey == LogicalKeyboardKey.keyR)) {
+          ((HardwareKeyboard.instance.isControlPressed || HardwareKeyboard.instance.isMetaPressed) &&
+              event.logicalKey == LogicalKeyboardKey.keyR)) {
         _handleRefresh();
         return true;
       }
@@ -259,7 +325,10 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
   }
 
   Future<void> _requestInitialPermissions() async {
-    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS || Platform.isMacOS)) {
+    // permission_handler is only registered on Android and iOS; on macOS,
+    // WKWebView + Info.plist (NSCameraUsageDescription / NSMicrophoneUsageDescription)
+    // + onPermissionRequest handle camera and microphone access natively.
+    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
       await _kioskService.setPermissionRequestInProgress(true);
       try {
         final cameraStatus = await Permission.camera.request();
@@ -791,8 +860,16 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                 }
               },
               onLoadStop: (controller, url) async {
+                final loadedUrl = url?.toString().trim() ?? '';
+                final isValidLoadedUrl = loadedUrl.isNotEmpty &&
+                    loadedUrl != 'about:blank' &&
+                    (loadedUrl.startsWith('http://') || loadedUrl.startsWith('https://'));
                 setState(() {
                   _isLoading = false;
+                  if (isValidLoadedUrl && !_hasError) {
+                    _hasLoadedSuccessfully = true;
+                    _autoRetryCount = 0;
+                  }
                 });
                 if (url != null) {
                   _detector.evaluateUrl(url.toString());
@@ -812,7 +889,21 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                 });
               },
               onReceivedServerTrustAuthRequest: (controller, challenge) async {
-                debugPrint('[InAppWebView] SSL ServerTrustAuthRequest for: ${challenge.protectionSpace.host}');
+                final host = challenge.protectionSpace.host;
+                debugPrint('[InAppWebView] SSL ServerTrustAuthRequest for: $host');
+                // On macOS & iOS (WKWebView), flutter_inappwebview_macos 1.1.2 has a bug in
+                // ServerTrustAuthResponseAction.PROCEED where it calls SecTrustCopyExceptions
+                // and invokes WKNavigationDelegate's completionHandler(.useCredential) from a
+                // background thread instead of the main thread, stalling TLS handshakes on
+                // macOS Sonoma 14.x until "The request timed out." (NSURLErrorTimedOut).
+                // Returning null for public HTTPS hosts invokes .performDefaultHandling on the
+                // main thread so macOS native TLS verification succeeds immediately.
+                if (!kIsWeb && (Platform.isMacOS || Platform.isIOS)) {
+                  if (_isLocalOrPrivateHost(host)) {
+                    return ServerTrustAuthResponse(action: ServerTrustAuthResponseAction.PROCEED);
+                  }
+                  return null;
+                }
                 return ServerTrustAuthResponse(action: ServerTrustAuthResponseAction.PROCEED);
               },
               onReceivedHttpError: (controller, request, errorResponse) {
@@ -821,8 +912,59 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
               onConsoleMessage: (controller, consoleMessage) {
                 debugPrint('[InAppWebView Console] ${consoleMessage.messageLevel}: ${consoleMessage.message}');
               },
+              onWebContentProcessDidTerminate: (controller) {
+                debugPrint('[InAppWebView] WebKit WebContent process terminated; recovering page...');
+                unawaited(_reloadOrLoadTargetUrl(forceLoadUrl: true));
+              },
               onReceivedError: (controller, request, error) {
-                debugPrint('[InAppWebView Error] Code: ${error.type}, Desc: ${error.description}');
+                debugPrint(
+                  '[InAppWebView Error] Code: ${error.type}, Desc: ${error.description}, '
+                  'URL: ${request.url}, isForMainFrame: ${request.isForMainFrame}',
+                );
+
+                // 1. Ignore subresource errors (images, fonts, analytics, iframes)
+                if (request.isForMainFrame == false) {
+                  return;
+                }
+
+                // 2. Ignore cancelled navigations (e.g., rapid redirects or user-initiated reload)
+                if (error.type == WebResourceErrorType.CANCELLED ||
+                    error.description.toLowerCase().contains('cancelled') ||
+                    error.description.toLowerCase().contains('canceled')) {
+                  return;
+                }
+
+                // 3. On macOS, InAppWebView.swift constructs WebResourceRequest with isForMainFrame == null.
+                // If the main page has already loaded and a third-party subresource fails, do not replace the screen.
+                final failingHost = request.url.host.toLowerCase();
+                final targetHost = (Uri.tryParse(EnvConfig().currentUrl)?.host ?? '').toLowerCase();
+                if (_hasLoadedSuccessfully &&
+                    request.isForMainFrame == null &&
+                    failingHost.isNotEmpty &&
+                    targetHost.isNotEmpty &&
+                    failingHost != targetHost &&
+                    !failingHost.endsWith('.$targetHost')) {
+                  debugPrint('[InAppWebView] Ignoring third-party resource error on $failingHost');
+                  return;
+                }
+
+                // 4. Auto-retry transient initial load failures/timeouts up to 2 times before showing error screen
+                if (!_hasLoadedSuccessfully && _autoRetryCount < 2) {
+                  _autoRetryCount++;
+                  debugPrint('[InAppWebView] Auto-retrying initial load (attempt $_autoRetryCount/2)...');
+                  setState(() {
+                    _hasError = false;
+                    _isLoading = true;
+                    _loadProgress = 0.0;
+                  });
+                  Future<void>.delayed(const Duration(milliseconds: 1200), () {
+                    if (mounted) {
+                      unawaited(_reloadOrLoadTargetUrl(forceLoadUrl: true));
+                    }
+                  });
+                  return;
+                }
+
                 setState(() {
                   _hasError = true;
                   _errorMessage = error.description;
@@ -927,11 +1069,8 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                         padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                       ),
                       onPressed: () {
-                        setState(() {
-                          _hasError = false;
-                          _isLoading = true;
-                        });
-                        _webViewController?.reload();
+                        _autoRetryCount = 0;
+                        unawaited(_reloadOrLoadTargetUrl(forceLoadUrl: true));
                       },
                       icon: const Icon(Icons.refresh, color: Colors.white),
                       label: const Text('Coba Lagi', style: TextStyle(color: Colors.white)),
