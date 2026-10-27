@@ -78,17 +78,18 @@ fvm flutter build windows --release
 Hasil build akan berada di:  
 `build/windows/x64/runner/Release/`
 
-### 6. Build Release macOS (.dmg Installer)
-Jalankan script otomatis untuk build release dan generate `.dmg` installer:
+### 6. Build Release macOS (.pkg & .dmg Installer)
+Jalankan script otomatis untuk build release Universal (`arm64` + `x86_64`), code signing, notarization, serta generate `.pkg` (otomatis install ke `/Applications`) dan `.dmg`:
 ```bash
 chmod +x scripts/build_macos.sh
 ./scripts/build_macos.sh
 ```
-Hasil installer `.dmg` akan berada di:  
-`build/macos/ARA_Assessment_<version>.dmg`
+Hasil installer akan berada di:  
+- `build/macos/ARA_Assessment_<version>.pkg` *(otomatis menginstal `ARA Assessment.app` langsung ke `/Applications` tanpa perlu ubah lokasi manual)*
+- `build/macos/ARA_Assessment_<version>.dmg`
 
-> **Catatan Installer macOS**:
-> - Script otomatis menggunakan `create-dmg` (bila terinstal via `brew install create-dmg`) untuk tampilan drag-and-drop installer yang rapi, atau fallback otomatis ke native `hdiutil` bawaan macOS tanpa instal tool tambahan.
+> **Catatan Installer macOS (`.pkg`)**:
+> - Menggunakan `pkgbuild --analyze` dengan `BundleIsRelocatable=false` dan `Distribution.xml` (`enable_localSystem="true"`, `enable_currentUserHome="false"`, `enable_anywhere="false"`, `rootVolumeOnly="true"`), sehingga macOS Installer selalu menginstal langsung ke `/Applications/ARA Assessment.app` secara otomatis dan tidak merelokasi ke folder `build/` atau `~/Applications`.
 
 ### 7. Build iOS (wajib di Mac)
 iOS tidak dapat di-build dari Windows. Di Mac (Xcode terinstal), project memakai Swift Package Manager:
