@@ -11,6 +11,21 @@ class MainFlutterWindow: NSWindow {
   static var isOfficeSessionActive: Bool = false
   static var isExitingCleanly: Bool = false
 
+  /// Allowed macOS system UI / TCC permission / security helper bundle IDs that must never be
+  /// fought by the foreground watchdog when presenting camera/microphone/file sheets.
+  private static let allowedSystemBundlePrefixes: [String] = [
+    "com.apple.universalAccessAuthWarn",
+    "com.apple.CoreServicesUIAgent",
+    "com.apple.UserNotificationCenter",
+    "com.apple.securityagent",
+    "com.apple.SecurityAgent",
+    "com.apple.screencaptureui",
+    "com.apple.controlcenter",
+    "com.apple.appkit.xpc.openAndSavePanelService",
+    "com.apple.Safari.SandboxBroker",
+    "com.apple.WebKit."
+  ]
+
   private var kioskChannel: FlutterMethodChannel?
   private var localSwipeMonitor: Any?
 
@@ -111,13 +126,26 @@ class MainFlutterWindow: NSWindow {
         .ignoresCycle
       ]
 
-      // 2. High window level:
-      // .screenSaver is above normal desktop windows, Dock, and Menu Bar.
-      self.level = MainFlutterWindow.isOfficeSessionActive ? .normal : .screenSaver
+      // 2. Keep .normal window level:
+      // Using .normal (instead of .screenSaver = 1000) ensures that any native dialog,
+      // NSAlert, NSOpenPanel, <select> popup menu, or macOS TCC Camera/Microphone permission
+      // sheet is NEVER buried behind MainFlutterWindow (which previously caused macOS AppKit
+      // to play NSBeep() on every click and ignore all input).
+      // Dock, Menu Bar, Cmd+Tab, and Mission Control remain 100% locked via NSApp.presentationOptions.
+      self.level = .normal
 
-      // 3. Borderless full screen frame covering active display:
-      self.styleMask = [.borderless]
-      if let screen = NSScreen.main {
+      // 3. Frameless full-screen appearance while preserving .titled (NSThemeFrame):
+      // Dynamically stripping .titled into [.borderless] on a mounted FlutterMacOS window
+      // recreates the window frame view and detaches WKWebView's responder chain.
+      // Keeping [.titled, .fullSizeContentView] with a hidden titlebar preserves WKWebView click/key focus.
+      self.styleMask = [.titled, .fullSizeContentView]
+      self.titleVisibility = .hidden
+      self.titlebarAppearsTransparent = true
+      self.isMovable = false
+      self.isMovableByWindowBackground = false
+      setWindowControlButtonsHidden(true)
+
+      if let screen = NSScreen.main ?? self.screen {
         self.setFrame(screen.frame, display: true)
       }
 
@@ -142,21 +170,66 @@ class MainFlutterWindow: NSWindow {
 
       self.makeKeyAndOrderFront(nil)
       NSApp.activate(ignoringOtherApps: true)
+      restoreWebViewFirstResponderIfNeeded()
     } else {
       // Unlocked / normal mode (e.g. supervisor override or before exam)
       NSApp.presentationOptions = []
       self.level = .normal
       self.title = "ARA Assessment"
       self.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+      self.titleVisibility = .visible
+      self.titlebarAppearsTransparent = false
+      self.isMovable = true
+      self.isMovableByWindowBackground = false
+      setWindowControlButtonsHidden(false)
       self.collectionBehavior = [.managed]
-      if let screen = NSScreen.main {
+      if let screen = NSScreen.main ?? self.screen {
         let width: CGFloat = 1366
         let height: CGFloat = 768
         let x = (screen.frame.width - width) / 2 + screen.frame.origin.x
         let y = (screen.frame.height - height) / 2 + screen.frame.origin.y
         self.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
       }
+      restoreWebViewFirstResponderIfNeeded()
     }
+  }
+
+  private func setWindowControlButtonsHidden(_ hidden: Bool) {
+    let buttonTypes: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
+    for type in buttonTypes {
+      if let btn = self.standardWindowButton(type) {
+        btn.isHidden = hidden
+        btn.isEnabled = !hidden
+      }
+    }
+    if let titlebarContainer = self.standardWindowButton(.closeButton)?.superview?.superview {
+      titlebarContainer.isHidden = hidden
+    }
+  }
+
+  private func restoreWebViewFirstResponderIfNeeded() {
+    guard NSApp.modalWindow == nil && self.attachedSheet == nil else { return }
+    if let rootView = self.contentView, let webView = findWebView(in: rootView) {
+      if self.firstResponder === self || self.firstResponder == nil {
+        self.makeFirstResponder(webView)
+      }
+    } else if let flutterView = self.contentViewController?.view {
+      if self.firstResponder === self || self.firstResponder == nil {
+        self.makeFirstResponder(flutterView)
+      }
+    }
+  }
+
+  private func findWebView(in view: NSView) -> WKWebView? {
+    if let webView = view as? WKWebView {
+      return webView
+    }
+    for subview in view.subviews {
+      if let found = findWebView(in: subview) {
+        return found
+      }
+    }
+    return nil
   }
 
   // MARK: - Lifecycle & Workspace Watchdog
@@ -187,8 +260,19 @@ class MainFlutterWindow: NSWindow {
     )
   }
 
+  private func hasActiveModalOrSheet() -> Bool {
+    if NSApp.modalWindow != nil || self.attachedSheet != nil {
+      return true
+    }
+    if let children = self.childWindows, !children.isEmpty {
+      return true
+    }
+    return false
+  }
+
   @objc private func handleWorkspaceAppActivation(_ notification: Notification) {
     guard MainFlutterWindow.isKioskLocked && !MainFlutterWindow.isExitingCleanly else { return }
+    guard !hasActiveModalOrSheet() else { return }
     guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else {
       return
     }
@@ -197,9 +281,11 @@ class MainFlutterWindow: NSWindow {
     let appName = (app.localizedName ?? "").lowercased()
 
     if bundleId == Bundle.main.bundleIdentifier {
-      if !MainFlutterWindow.isOfficeSessionActive {
-        self.level = .screenSaver
-      }
+      return
+    }
+
+    // Allow macOS system permission/security/open-panel helper processes
+    if MainFlutterWindow.allowedSystemBundlePrefixes.contains(where: { bundleId.hasPrefix($0) }) {
       return
     }
 
@@ -226,30 +312,42 @@ class MainFlutterWindow: NSWindow {
 
   @objc private func handleAppDidResignActive(_ notification: Notification) {
     guard MainFlutterWindow.isKioskLocked && !MainFlutterWindow.isExitingCleanly && !MainFlutterWindow.isOfficeSessionActive else { return }
+    guard !hasActiveModalOrSheet() else { return }
+
+    // Check if the newly active app is a system TCC/security helper before forcing foreground
+    if let frontApp = NSWorkspace.shared.frontmostApplication,
+       let bundleId = frontApp.bundleIdentifier,
+       MainFlutterWindow.allowedSystemBundlePrefixes.contains(where: { bundleId.hasPrefix($0) }) {
+      return
+    }
+
     DispatchQueue.main.async { [weak self] in
-      self?.forceForeground()
-      self?.kioskChannel?.invokeMethod("onNavigationBlocked", arguments: ["reason": "minimize"])
+      guard let self = self, !self.hasActiveModalOrSheet() else { return }
+      self.forceForeground()
+      self.kioskChannel?.invokeMethod("onNavigationBlocked", arguments: ["reason": "minimize"])
     }
   }
 
   @objc private func handleWindowDidResignKey(_ notification: Notification) {
+    // Do NOT call forceForeground() when MainFlutterWindow resigns key while ARA Assessment
+    // is still the active application: internal sheets, NSAlert, NSOpenPanel, and <select>
+    // popups temporarily become key window. Stealing key focus back buries modal panels
+    // behind MainFlutterWindow and causes AppKit to play NSBeep() on every mouse click!
     guard MainFlutterWindow.isKioskLocked && !MainFlutterWindow.isExitingCleanly && !MainFlutterWindow.isOfficeSessionActive else { return }
-    DispatchQueue.main.async { [weak self] in
-      self?.forceForeground()
-    }
+    guard !NSApp.isActive && !hasActiveModalOrSheet() else { return }
   }
 
   func forceForeground() {
-    self.level = .screenSaver
+    guard !hasActiveModalOrSheet() else { return }
+    self.level = .normal
     NSApp.activate(ignoringOtherApps: true)
     self.makeKeyAndOrderFront(nil)
+    restoreWebViewFirstResponderIfNeeded()
   }
 
   private func evaluateOfficeSessionWindowLevel() {
-    if MainFlutterWindow.isOfficeSessionActive {
-      self.level = .normal
-    } else if MainFlutterWindow.isKioskLocked {
-      self.level = .screenSaver
+    self.level = .normal
+    if !MainFlutterWindow.isOfficeSessionActive && MainFlutterWindow.isKioskLocked {
       self.forceForeground()
     }
   }
@@ -275,6 +373,10 @@ class MainFlutterWindow: NSWindow {
     super.scrollWheel(with: event)
   }
 
+  override func noResponder(for eventSelector: Selector) {
+    // Suppress default AppKit NSBeep() when an unhandled key/mouse selector reaches the window root
+  }
+
   override var canBecomeKey: Bool {
     return true
   }
@@ -294,7 +396,7 @@ class MainFlutterWindow: NSWindow {
   }
 }
 
-// MARK: - Unconditional WKWebView SSL / TLS Certificate Auto-Trust (macOS)
+// MARK: - Unconditional WKWebView SSL / TLS Certificate Auto-Trust & Safe Sheet Dialogs (macOS)
 
 extension InAppWebView {
   private static var hasInstalledSslBypass = false
@@ -314,6 +416,14 @@ extension InAppWebView {
       original: #selector(WKNavigationDelegate.webView(_:authenticationChallenge:shouldAllowDeprecatedTLS:)),
       replacement: #selector(InAppWebView.ara_webView(_:authenticationChallenge:shouldAllowDeprecatedTLS:))
     )
+
+    if #available(macOS 10.12, *) {
+      swizzleInstanceMethod(
+        targetClass: InAppWebView.self,
+        original: #selector(WKUIDelegate.webView(_:runOpenPanelWith:initiatedByFrame:completionHandler:)),
+        replacement: #selector(InAppWebView.ara_webView(_:runOpenPanelWith:initiatedByFrame:completionHandler:))
+      )
+    }
   }
 
   private static func swizzleInstanceMethod(targetClass: AnyClass, original: Selector, replacement: Selector) {
@@ -399,6 +509,40 @@ extension InAppWebView {
     } else {
       DispatchQueue.main.async {
         decisionHandler(true)
+      }
+    }
+  }
+
+  @available(macOS 10.12, *)
+  @objc func ara_webView(
+    _ webView: WKWebView,
+    runOpenPanelWith parameters: WKOpenPanelParameters,
+    initiatedByFrame frame: WKFrameInfo,
+    completionHandler: @escaping ([URL]?) -> Void
+  ) {
+    let openPanel = NSOpenPanel()
+    openPanel.canChooseFiles = true
+    if #available(macOS 10.13.4, *) {
+      openPanel.canChooseDirectories = parameters.allowsDirectories
+    }
+    openPanel.allowsMultipleSelection = parameters.allowsMultipleSelection
+    openPanel.level = .modalPanel
+
+    if let parentWindow = webView.window ?? NSApp.mainWindow ?? NSApp.keyWindow {
+      openPanel.beginSheetModal(for: parentWindow) { result in
+        if result == .OK {
+          completionHandler(openPanel.urls)
+        } else {
+          completionHandler(nil)
+        }
+      }
+    } else {
+      openPanel.begin { result in
+        if result == .OK {
+          completionHandler(openPanel.urls)
+        } else {
+          completionHandler(nil)
+        }
       }
     }
   }

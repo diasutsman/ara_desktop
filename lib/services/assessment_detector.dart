@@ -18,6 +18,42 @@ class AssessmentDetector {
   // JavaScript snippet injected into every web page loaded
   static const String injectedScript = """
     (function() {
+      // 1. Apple WKWebView compatibility guards for MediaRecorder & getDisplayMedia:
+      // - Prevents macOS WKWebView from popping up a blocking native OS screen-sharing
+      //   picker modal sheet during Kiosk mode when startScreenRecordingLite() runs,
+      //   while keeping camera proctoring (getUserMedia) 100% active.
+      // - Normalizes unsupported "video/webm;codecs=vp8" mimeType on Apple WebKit.
+      try {
+        var ua = navigator.userAgent || '';
+        var isAppleWebKit = /Macintosh|Mac OS X|iPhone|iPad|iPod/i.test(ua) &&
+                            typeof window.webkit !== 'undefined';
+        if (isAppleWebKit && navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function') {
+          navigator.mediaDevices.getDisplayMedia = function() {
+            return Promise.reject(new DOMException('Screen recording is managed by ARA Desktop Kiosk.', 'NotAllowedError'));
+          };
+        }
+        if (typeof window.MediaRecorder === 'function') {
+          var OriginalMediaRecorder = window.MediaRecorder;
+          var PatchedMediaRecorder = function(stream, options) {
+            var safeOptions = options;
+            try {
+              if (options && options.mimeType && typeof OriginalMediaRecorder.isTypeSupported === 'function') {
+                if (!OriginalMediaRecorder.isTypeSupported(options.mimeType)) {
+                  safeOptions = Object.assign({}, options);
+                  delete safeOptions.mimeType;
+                }
+              }
+            } catch (_) {}
+            return new OriginalMediaRecorder(stream, safeOptions);
+          };
+          PatchedMediaRecorder.prototype = OriginalMediaRecorder.prototype;
+          if (typeof OriginalMediaRecorder.isTypeSupported === 'function') {
+            PatchedMediaRecorder.isTypeSupported = OriginalMediaRecorder.isTypeSupported.bind(OriginalMediaRecorder);
+          }
+          window.MediaRecorder = PatchedMediaRecorder;
+        }
+      } catch (_) {}
+
       // Expose helper API for web portal to invoke if custom integration is used
       window.setAraAssessmentMode = function(mode) {
         if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {

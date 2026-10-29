@@ -391,6 +391,225 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
     return NavigationActionPolicy.CANCEL;
   }
 
+  // ---------------------------------------------------------------------------
+  // In-App JavaScript Dialogs (alert / confirm / prompt) & Popup Windows
+  // Prevents macOS WKWebView from calling blocking NSAlert().runModal() which
+  // gets buried behind Kiosk windows and causes NSBeep() on every mouse click.
+  // ---------------------------------------------------------------------------
+
+  Future<JsAlertResponse?> _handleJsAlert(
+    InAppWebViewController controller,
+    JsAlertRequest request,
+  ) async {
+    final message = (request.message ?? '').trim();
+    debugPrint('[InAppWebView] JS Alert: $message');
+    if (!mounted) {
+      return JsAlertResponse(
+        handledByClient: true,
+        action: JsAlertResponseAction.CONFIRM,
+      );
+    }
+    try {
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E2E),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          title: const Row(
+            children: [
+              Icon(Icons.info_outline_rounded, color: Color(0xFF00AEF0), size: 22),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Informasi Portal',
+                  style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                ),
+              ),
+            ],
+          ),
+          content: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 440),
+            child: Text(
+              message.isNotEmpty ? message : 'Notifikasi dari halaman ujian.',
+              style: const TextStyle(color: Colors.white, fontSize: 14, height: 1.45),
+            ),
+          ),
+          actions: [
+            ElevatedButton(
+              autofocus: true,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF00AEF0),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 10),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('OK', style: TextStyle(fontWeight: FontWeight.w600)),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      debugPrint('[InAppWebView] Error showing JS Alert dialog: $e');
+    }
+    return JsAlertResponse(
+      handledByClient: true,
+      action: JsAlertResponseAction.CONFIRM,
+    );
+  }
+
+  Future<JsConfirmResponse?> _handleJsConfirm(
+    InAppWebViewController controller,
+    JsConfirmRequest request,
+  ) async {
+    final message = (request.message ?? '').trim();
+    debugPrint('[InAppWebView] JS Confirm: $message');
+    if (!mounted) {
+      return JsConfirmResponse(
+        handledByClient: true,
+        action: JsConfirmResponseAction.CONFIRM,
+      );
+    }
+    bool confirmed = false;
+    try {
+      final res = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E2E),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          title: const Row(
+            children: [
+              Icon(Icons.help_outline_rounded, color: Colors.amberAccent, size: 22),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Konfirmasi',
+                  style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                ),
+              ),
+            ],
+          ),
+          content: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 440),
+            child: Text(
+              message.isNotEmpty ? message : 'Apakah Anda yakin ingin melanjutkan?',
+              style: const TextStyle(color: Colors.white, fontSize: 14, height: 1.45),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('Batal', style: TextStyle(color: Colors.white70)),
+            ),
+            ElevatedButton(
+              autofocus: true,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF00AEF0),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 10),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('OK', style: TextStyle(fontWeight: FontWeight.w600)),
+            ),
+          ],
+        ),
+      );
+      confirmed = res ?? false;
+    } catch (e) {
+      debugPrint('[InAppWebView] Error showing JS Confirm dialog: $e');
+    }
+    return JsConfirmResponse(
+      handledByClient: true,
+      action: confirmed ? JsConfirmResponseAction.CONFIRM : JsConfirmResponseAction.CANCEL,
+    );
+  }
+
+  Future<JsPromptResponse?> _handleJsPrompt(
+    InAppWebViewController controller,
+    JsPromptRequest request,
+  ) async {
+    final message = (request.message ?? '').trim();
+    final defaultValue = request.defaultValue ?? '';
+    debugPrint('[InAppWebView] JS Prompt: $message');
+    if (!mounted) {
+      return JsPromptResponse(
+        handledByClient: true,
+        action: JsPromptResponseAction.CANCEL,
+      );
+    }
+    final textController = TextEditingController(text: defaultValue);
+    String? submittedValue;
+    try {
+      submittedValue = await showDialog<String>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E2E),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          title: Text(
+            message.isNotEmpty ? message : 'Masukkan Input',
+            style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
+          ),
+          content: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 440),
+            child: TextField(
+              controller: textController,
+              autofocus: true,
+              style: const TextStyle(color: Colors.white),
+              decoration: InputDecoration(
+                filled: true,
+                fillColor: Colors.white10,
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              onSubmitted: (val) => Navigator.of(ctx).pop(val),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(null),
+              child: const Text('Batal', style: TextStyle(color: Colors.white70)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF00AEF0),
+                foregroundColor: Colors.white,
+              ),
+              onPressed: () => Navigator.of(ctx).pop(textController.text),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      debugPrint('[InAppWebView] Error showing JS Prompt dialog: $e');
+    } finally {
+      textController.dispose();
+    }
+    return JsPromptResponse(
+      handledByClient: true,
+      action: submittedValue != null ? JsPromptResponseAction.CONFIRM : JsPromptResponseAction.CANCEL,
+      value: submittedValue,
+    );
+  }
+
+  Future<bool?> _handleCreateWindow(
+    InAppWebViewController controller,
+    CreateWindowAction createWindowAction,
+  ) async {
+    final targetUrl = createWindowAction.request.url;
+    if (targetUrl == null) return false;
+    final uri = Uri.tryParse(targetUrl.toString());
+    if (uri != null && OfficeDocumentService.isOfficeDocumentUrl(uri)) {
+      unawaited(_openPortalDocument(uri));
+      return false;
+    }
+    await controller.loadUrl(urlRequest: createWindowAction.request);
+    return false;
+  }
+
   Future<void> _launchOfficeScheme(Uri uri) async {
     final scheme = uri.scheme.toLowerCase();
     final app = scheme == 'ms-excel'
@@ -772,7 +991,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                   Expanded(
                     child: KeyboardListener(
                       focusNode: _keyboardFocusNode,
-                      autofocus: !_isMobile,
+                      autofocus: false,
                       onKeyEvent: (event) {
                         // Shortcut Ctrl + Shift + F12 or Alt + F12 to trigger supervisor panel
                         if (event is KeyDownEvent &&
@@ -835,6 +1054,10 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                   action: PermissionResponseAction.GRANT,
                 );
               },
+              onJsAlert: _handleJsAlert,
+              onJsConfirm: _handleJsConfirm,
+              onJsPrompt: _handleJsPrompt,
+              onCreateWindow: _handleCreateWindow,
               shouldOverrideUrlLoading: _handleNavigation,
               onDownloadStartRequest: _handleDownload,
               onLoadStart: (controller, url) {
