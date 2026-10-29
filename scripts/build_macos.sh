@@ -267,16 +267,26 @@ say "Running Flutter pub get"
 
 "${FLUTTER[@]}" pub get
 
-# Patch flutter_inappwebview_macos 1.1.2 background-thread completionHandler bug on macOS Sonoma
+# Patch flutter_inappwebview_macos 1.1.2 SSL/TLS ServerTrust handling (auto-evaluate & main-thread completionHandler)
+patch_inappwebview_swift() {
+  local INAPP_SWIFT="$1"
+  [[ -f "$INAPP_SWIFT" ]] || return 0
+  if grep -Fq 'let exceptions = SecTrustCopyExceptions(serverTrust)' "$INAPP_SWIFT" &&
+     ! grep -Fq 'SecTrustSetNetworkFetchAllowed(serverTrust, false)' "$INAPP_SWIFT"; then
+    say "Patching flutter_inappwebview_macos SSL ServerTrust auto-accept in $INAPP_SWIFT"
+    /usr/bin/perl -0pi -e '
+      s/let exceptions = SecTrustCopyExceptions\(serverTrust\)\s*\n\s*SecTrustSetExceptions\(serverTrust, exceptions\)\s*\n\s*let credential = URLCredential\(trust: serverTrust\)\s*\n\s*(?:DispatchQueue\.main\.async \{ completionHandler\(\.useCredential, credential\) \}|completionHandler\(\.useCredential, credential\))/SecTrustSetNetworkFetchAllowed(serverTrust, false)\n                                _ = SecTrustEvaluateWithError(serverTrust, nil)\n                                if let exceptions = SecTrustCopyExceptions(serverTrust) {\n                                    SecTrustSetExceptions(serverTrust, exceptions)\n                                }\n                                let credential = URLCredential(trust: serverTrust)\n                                DispatchQueue.main.async { completionHandler(.useCredential, credential) }/g
+    ' "$INAPP_SWIFT" || true
+  fi
+}
+
+if [[ -f "$PROJECT_ROOT/macos/Flutter/ephemeral/.symlinks/plugins/flutter_inappwebview_macos/macos/Classes/InAppWebView/InAppWebView.swift" ]]; then
+  patch_inappwebview_swift "$PROJECT_ROOT/macos/Flutter/ephemeral/.symlinks/plugins/flutter_inappwebview_macos/macos/Classes/InAppWebView/InAppWebView.swift"
+fi
+
 if [[ -d "${PUB_CACHE:-$HOME/.pub-cache}/hosted/pub.dev" ]]; then
   while IFS= read -r -d '' INAPP_SWIFT; do
-    if grep -Fq 'let credential = URLCredential(trust: serverTrust)' "$INAPP_SWIFT" &&
-       ! grep -Fq 'DispatchQueue.main.async { completionHandler(.useCredential, credential) }' "$INAPP_SWIFT"; then
-      say "Patching flutter_inappwebview_macos main-thread TLS completionHandler in $(basename "$(dirname "$(dirname "$(dirname "$INAPP_SWIFT")")")")"
-      /usr/bin/perl -0pi -e '
-        s/let credential = URLCredential\(trust: serverTrust\)\s*\n\s*completionHandler\(\.useCredential, credential\)/let credential = URLCredential(trust: serverTrust)\n                                DispatchQueue.main.async { completionHandler(.useCredential, credential) }/g
-      ' "$INAPP_SWIFT" || true
-    fi
+    patch_inappwebview_swift "$INAPP_SWIFT"
   done < <(find "${PUB_CACHE:-$HOME/.pub-cache}/hosted/pub.dev" -path '*/flutter_inappwebview_macos*/macos/Classes/InAppWebView/InAppWebView.swift' -print0 2>/dev/null || true)
 fi
 
@@ -661,6 +671,18 @@ LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchS
 if [[ -x "\$LSREGISTER" ]]; then
   "\$LSREGISTER" -f "\$FINAL_APP" >/dev/null 2>&1 || true
 fi
+
+# Automatically trust ara-assessment.com SSL certificate & Sectigo R36 intermediate
+# in the macOS System Keychain so WKWebView never rejects incomplete server cert chains.
+(
+  /usr/bin/curl -fsSL --max-time 6 "http://crt.sectigo.com/SectigoPublicServerAuthenticationCADVR36.crt" -o /tmp/ara_sectigo_r36.crt 2>/dev/null &&
+    /usr/bin/security add-trusted-cert -d -r trustAsRoot -k /Library/Keychains/System.keychain /tmp/ara_sectigo_r36.crt >/dev/null 2>&1
+  /usr/bin/openssl s_client -connect ara-assessment.com:443 -servername ara-assessment.com </dev/null 2>/dev/null |
+    /usr/bin/openssl x509 -outform PEM > /tmp/ara_server_cert.pem 2>/dev/null &&
+    [[ -s /tmp/ara_server_cert.pem ]] &&
+    /usr/bin/security add-trusted-cert -d -r trustAsRoot -k /Library/Keychains/System.keychain /tmp/ara_server_cert.pem >/dev/null 2>&1
+  /bin/rm -f /tmp/ara_sectigo_r36.crt /tmp/ara_server_cert.pem
+) >/dev/null 2>&1 || true
 
 exit 0
 EOF

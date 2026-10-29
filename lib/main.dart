@@ -10,6 +10,9 @@ import 'ui/webview_screen.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // Always accept all SSL/TLS certificates globally across Dart HttpClient calls
+  HttpOverrides.global = _AraIgnoreSslHttpOverrides();
+
   // Initialize environment configuration (.env)
   await EnvConfig().initialize();
 
@@ -87,5 +90,13 @@ class AraAssessmentApp extends StatelessWidget {
       ),
       home: const WebViewScreen(),
     );
+  }
+}
+
+class _AraIgnoreSslHttpOverrides extends HttpOverrides {
+  @override
+  HttpClient createHttpClient(SecurityContext? context) {
+    return super.createHttpClient(context)
+      ..badCertificateCallback = (X509Certificate cert, String host, int port) => true;
   }
 }

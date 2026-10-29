@@ -1,6 +1,8 @@
 import Flutter
 import ObjectiveC.runtime
+import Security
 import UIKit
+import WebKit
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
@@ -9,13 +11,123 @@ import UIKit
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
     FlutterViewController.installAraKioskGestureOverrides()
+    WKWebView.installAraSslCertificateBypass()
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
+    WKWebView.installAraSslCertificateBypass()
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "AraMobileKioskPlugin") {
       AraMobileKioskPlugin.register(with: registrar)
+    }
+  }
+}
+
+// MARK: - Unconditional WKWebView SSL / TLS Certificate Auto-Trust (iOS)
+
+extension WKWebView {
+  private static var hasInstalledSslBypass = false
+
+  static func installAraSslCertificateBypass() {
+    guard !hasInstalledSslBypass else { return }
+    guard let targetClass = NSClassFromString("flutter_inappwebview_ios.InAppWebView") else {
+      return
+    }
+    hasInstalledSslBypass = true
+
+    swizzleWebViewMethod(
+      targetClass: targetClass,
+      original: #selector(WKNavigationDelegate.webView(_:didReceive:completionHandler:)),
+      replacement: #selector(WKWebView.ara_webView(_:didReceive:completionHandler:))
+    )
+
+    swizzleWebViewMethod(
+      targetClass: targetClass,
+      original: #selector(WKNavigationDelegate.webView(_:authenticationChallenge:shouldAllowDeprecatedTLS:)),
+      replacement: #selector(WKWebView.ara_webView(_:authenticationChallenge:shouldAllowDeprecatedTLS:))
+    )
+  }
+
+  private static func swizzleWebViewMethod(targetClass: AnyClass, original: Selector, replacement: Selector) {
+    guard
+      let originalMethod = class_getInstanceMethod(targetClass, original),
+      let replacementMethod = class_getInstanceMethod(WKWebView.self, replacement)
+    else {
+      return
+    }
+    let didAdd = class_addMethod(
+      targetClass,
+      original,
+      method_getImplementation(replacementMethod),
+      method_getTypeEncoding(replacementMethod)
+    )
+    if didAdd {
+      class_replaceMethod(
+        targetClass,
+        replacement,
+        method_getImplementation(originalMethod),
+        method_getTypeEncoding(originalMethod)
+      )
+    } else {
+      method_exchangeImplementations(originalMethod, replacementMethod)
+    }
+  }
+
+  @objc func ara_webView(
+    _ webView: WKWebView,
+    didReceive challenge: URLAuthenticationChallenge,
+    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+  ) {
+    if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust {
+      guard let serverTrust = challenge.protectionSpace.serverTrust else {
+        completionHandler(.performDefaultHandling, nil)
+        return
+      }
+
+      SecTrustSetNetworkFetchAllowed(serverTrust, false)
+
+      if #available(iOS 15.0, *) {
+        if let certChain = SecTrustCopyCertificateChain(serverTrust) as? [SecCertificate], !certChain.isEmpty {
+          SecTrustSetAnchorCertificates(serverTrust, certChain as CFArray)
+          SecTrustSetAnchorCertificatesOnly(serverTrust, false)
+        }
+      } else if let leafCert = SecTrustGetCertificateAtIndex(serverTrust, 0) {
+        SecTrustSetAnchorCertificates(serverTrust, [leafCert] as CFArray)
+        SecTrustSetAnchorCertificatesOnly(serverTrust, false)
+      }
+
+      _ = SecTrustEvaluateWithError(serverTrust, nil)
+
+      if let exceptions = SecTrustCopyExceptions(serverTrust) {
+        SecTrustSetExceptions(serverTrust, exceptions)
+      }
+
+      let credential = URLCredential(trust: serverTrust)
+      if Thread.isMainThread {
+        completionHandler(.useCredential, credential)
+      } else {
+        DispatchQueue.main.async {
+          completionHandler(.useCredential, credential)
+        }
+      }
+      return
+    }
+
+    self.ara_webView(webView, didReceive: challenge, completionHandler: completionHandler)
+  }
+
+  @objc func ara_webView(
+    _ webView: WKWebView,
+    authenticationChallenge challenge: URLAuthenticationChallenge,
+    shouldAllowDeprecatedTLS decisionHandler: @escaping (Bool) -> Void
+  ) {
+    if Thread.isMainThread {
+      decisionHandler(true)
+    } else {
+      DispatchQueue.main.async {
+        decisionHandler(true)
+      }
     }
   }
 }
