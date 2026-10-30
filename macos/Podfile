@@ -24,21 +24,39 @@ end
 
 require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelper'), flutter_root)
 
-# Override FlutterMacOS dummy podspec deployment target so CocoaPods allows macOS 10.15+ builds
-alias_method :orig_flutter_install_macos_engine_pod, :flutter_install_macos_engine_pod
-def flutter_install_macos_engine_pod(mac_application_path = nil)
-  orig_flutter_install_macos_engine_pod(mac_application_path)
+# Override FlutterMacOS dummy podspec deployment target on Object so CocoaPods TargetDefinition
+# inside `target 'Runner' do` generates FlutterMacOS.podspec with s.osx.deployment_target = '10.15'.
+Object.send(:define_method, :flutter_install_macos_engine_pod) do |mac_application_path = nil|
   mac_application_path ||= File.dirname(defined_in_file.realpath) if respond_to?(:defined_in_file)
-  return unless mac_application_path
+  mac_application_path ||= File.dirname(File.realpath(__FILE__))
+  raise 'Could not find macOS application path' unless mac_application_path
 
-  podspec_path = File.expand_path('FlutterMacOS.podspec', File.join(mac_application_path, 'Flutter', 'ephemeral'))
-  if File.exist?(podspec_path)
-    content = File.read(podspec_path)
-    File.write(
-      podspec_path,
-      content.gsub(/s\.osx\.deployment_target\s*=\s*['"][0-9.]+['"]/, "s.osx.deployment_target = '10.15'")
-    )
+  ephemeral_dir = File.join(mac_application_path, 'Flutter', 'ephemeral')
+  system('mkdir', '-p', ephemeral_dir)
+  copied_podspec_path = File.expand_path('FlutterMacOS.podspec', ephemeral_dir)
+
+  File.open(copied_podspec_path, 'w') do |podspec|
+    podspec.write <<~EOF
+      #
+      # This podspec is NOT to be published. It is only used as a local source!
+      # This is a generated file; do not edit or check into version control.
+      #
+
+      Pod::Spec.new do |s|
+        s.name             = 'FlutterMacOS'
+        s.version          = '1.0.0'
+        s.summary          = 'A UI toolkit for beautiful and fast apps.'
+        s.homepage         = 'https://flutter.dev'
+        s.license          = { :type => 'BSD' }
+        s.author           = { 'Flutter Dev Team' => 'flutter-dev@googlegroups.com' }
+        s.source           = { :git => 'https://github.com/flutter/engine', :tag => s.version.to_s }
+        s.osx.deployment_target = '10.15'
+        s.vendored_frameworks = 'path/to/nothing'
+      end
+    EOF
   end
+
+  pod 'FlutterMacOS', path: File.join('Flutter', 'ephemeral')
 end
 
 flutter_macos_podfile_setup
