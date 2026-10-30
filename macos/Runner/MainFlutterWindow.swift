@@ -411,11 +411,13 @@ extension InAppWebView {
       replacement: #selector(InAppWebView.ara_webView(_:didReceive:completionHandler:))
     )
 
-    swizzleInstanceMethod(
-      targetClass: InAppWebView.self,
-      original: #selector(WKNavigationDelegate.webView(_:authenticationChallenge:shouldAllowDeprecatedTLS:)),
-      replacement: #selector(InAppWebView.ara_webView(_:authenticationChallenge:shouldAllowDeprecatedTLS:))
-    )
+    if #available(macOS 11.0, *) {
+      swizzleInstanceMethod(
+        targetClass: InAppWebView.self,
+        original: #selector(WKNavigationDelegate.webView(_:authenticationChallenge:shouldAllowDeprecatedTLS:)),
+        replacement: #selector(InAppWebView.ara_webView(_:authenticationChallenge:shouldAllowDeprecatedTLS:))
+      )
+    }
 
     if #available(macOS 10.12, *) {
       swizzleInstanceMethod(
@@ -499,6 +501,7 @@ extension InAppWebView {
     self.ara_webView(webView, didReceive: challenge, completionHandler: completionHandler)
   }
 
+  @available(macOS 11.0, *)
   @objc func ara_webView(
     _ webView: WKWebView,
     authenticationChallenge challenge: URLAuthenticationChallenge,

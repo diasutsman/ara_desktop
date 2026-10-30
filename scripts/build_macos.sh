@@ -265,6 +265,9 @@ xcodebuild -version
 
 say "Running Flutter pub get"
 
+# Ensure CocoaPods is used so all plugins compile with MACOSX_DEPLOYMENT_TARGET=10.15 and Universal (arm64 + x86_64)
+"${FLUTTER[@]}" config --no-enable-swift-package-manager >/dev/null 2>&1 || true
+
 "${FLUTTER[@]}" pub get
 
 # Patch flutter_inappwebview_macos 1.1.2 SSL/TLS ServerTrust handling (auto-evaluate & main-thread completionHandler)
@@ -302,11 +305,11 @@ if [[ -f "$PROJECT_ROOT/macos/Podfile" ]]; then
 fi
 
 # ------------------------------------------------------------
-# 8. Prepare standard Xcode architectures (arm64 + x86_64)
+# 8. Prepare standard Xcode architectures (arm64 + x86_64) & macOS 10.15+ target
 # ------------------------------------------------------------
 
 if [[ -f "$PROJECT_PBXPROJ" ]]; then
-  say "Preparing Xcode architecture settings (Universal arm64 + x86_64)"
+  say "Preparing Xcode architecture (Universal arm64 + x86_64) & minimum macOS 10.15 deployment target"
 
   cp "$PROJECT_PBXPROJ" "$PROJECT_BACKUP"
   PATCHED_PBXPROJ=1
@@ -314,6 +317,7 @@ if [[ -f "$PROJECT_PBXPROJ" ]]; then
   /usr/bin/perl -0pi -e '
     s/^[ \t]*ARCHS = [^;]+;/        ARCHS = "\$(ARCHS_STANDARD)";/mg;
     s/^[ \t]*ONLY_ACTIVE_ARCH = YES;/        ONLY_ACTIVE_ARCH = NO;/mg;
+    s/^[ \t]*MACOSX_DEPLOYMENT_TARGET = [^;]+;/        MACOSX_DEPLOYMENT_TARGET = "10.15";/mg;
   ' "$PROJECT_PBXPROJ"
 fi
 
@@ -321,7 +325,11 @@ fi
 # 9. Build Flutter macOS release
 # ------------------------------------------------------------
 
-say "Building Flutter macOS release application"
+say "Building Flutter macOS release application (Universal arm64 + x86_64, macOS 10.15+)"
+
+export MACOSX_DEPLOYMENT_TARGET="10.15"
+export FLUTTER_XCODE_MACOSX_DEPLOYMENT_TARGET="10.15"
+export FLUTTER_XCODE_ONLY_ACTIVE_ARCH="NO"
 
 "${FLUTTER[@]}" build macos --release
 
@@ -367,9 +375,72 @@ INFO_PLIST="$APP_BUNDLE/Contents/Info.plist"
 [[ -f "$INFO_PLIST" ]] ||
   fail "The application is missing Info.plist."
 
-# Ensure Finder & Launchpad display "ARA Assessment" consistently
+# Ensure Finder & Launchpad display "ARA Assessment" consistently and support macOS 10.15+
 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName '$APP_NAME'" "$INFO_PLIST" 2>/dev/null ||
   /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string '$APP_NAME'" "$INFO_PLIST" 2>/dev/null || true
+
+/usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion 10.15" "$INFO_PLIST" 2>/dev/null ||
+  /usr/libexec/PlistBuddy -c "Add :LSMinimumSystemVersion string 10.15" "$INFO_PLIST" 2>/dev/null || true
+
+# Also lower LSMinimumSystemVersion in all nested Framework Info.plist files (including FlutterMacOS.framework)
+while IFS= read -r -d '' FW_PLIST; do
+  /usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion 10.15" "$FW_PLIST" 2>/dev/null || true
+  /usr/libexec/PlistBuddy -c "Set :MinimumOSVersion 10.15" "$FW_PLIST" 2>/dev/null || true
+done < <(find "$APP_BUNDLE/Contents/Frameworks" -name 'Info.plist' -print0 2>/dev/null || true)
+
+# Lower Mach-O LC_BUILD_VERSION minos to 10.15 on all binaries/frameworks so dyld on older macOS (Catalina/Big Sur) never rejects prebuilt frameworks
+lower_macho_minos_1015() {
+  local BIN="$1"
+  command -v xcrun >/dev/null 2>&1 || return 0
+  local ARCHS
+  ARCHS="$(lipo -archs "$BIN" 2>/dev/null || true)"
+  [[ -n "$ARCHS" ]] || return 0
+
+  local ARCH_ARRAY=($ARCHS)
+  if (( ${#ARCH_ARRAY[@]} == 1 )); then
+    local ARCH="${ARCH_ARRAY[0]}"
+    local SDK_VER
+    SDK_VER="$(xcrun vtool -arch "$ARCH" -show-build "$BIN" 2>/dev/null | awk '/sdk / {print $2; exit}' || true)"
+    [[ -n "$SDK_VER" && "$SDK_VER" != "n/a" ]] || SDK_VER="12.0"
+    if xcrun vtool -arch "$ARCH" -set-build-version macos 10.15 "$SDK_VER" -replace -output "${BIN}.vtmp" "$BIN" 2>/dev/null; then
+      mv -f "${BIN}.vtmp" "$BIN"
+    else
+      rm -f "${BIN}.vtmp"
+    fi
+  elif (( ${#ARCH_ARRAY[@]} > 1 )); then
+    local SLICE_FILES=()
+    local UPDATED=1
+    for ARCH in "${ARCH_ARRAY[@]}"; do
+      local SLICE="${BIN}.slice.${ARCH}"
+      local SLICE_OUT="${BIN}.slice.${ARCH}.out"
+      if lipo "$BIN" -thin "$ARCH" -output "$SLICE" 2>/dev/null; then
+        local SDK_VER
+        SDK_VER="$(xcrun vtool -show-build "$SLICE" 2>/dev/null | awk '/sdk / {print $2; exit}' || true)"
+        [[ -n "$SDK_VER" && "$SDK_VER" != "n/a" ]] || SDK_VER="12.0"
+        if xcrun vtool -set-build-version macos 10.15 "$SDK_VER" -replace -output "$SLICE_OUT" "$SLICE" 2>/dev/null; then
+          SLICE_FILES+=("$SLICE_OUT")
+        else
+          SLICE_FILES+=("$SLICE")
+        fi
+      else
+        UPDATED=0
+        break
+      fi
+    done
+    if (( UPDATED == 1 && ${#SLICE_FILES[@]} == ${#ARCH_ARRAY[@]} )); then
+      if lipo -create "${SLICE_FILES[@]}" -output "${BIN}.vfat" 2>/dev/null; then
+        mv -f "${BIN}.vfat" "$BIN"
+      fi
+    fi
+    rm -f "${BIN}.slice."* "${BIN}.vfat" 2>/dev/null || true
+  fi
+}
+
+while IFS= read -r -d '' BIN_PATH; do
+  DESC="$(file -b "$BIN_PATH" 2>/dev/null || true)"
+  [[ "$DESC" == *Mach-O* ]] || continue
+  lower_macho_minos_1015 "$BIN_PATH"
+done < <(find "$APP_BUNDLE/Contents" -type f ! -type l -print0 2>/dev/null || true)
 
 BUNDLE_ID="$(
   /usr/libexec/PlistBuddy \
@@ -665,8 +736,14 @@ if [[ "${IS_DEVELOPER_ID}" == "0" ]] || ! /usr/bin/codesign --verify --deep --st
   fi
 fi
 
+# Register in Gatekeeper SystemPolicy so macOS never shows "unidentified developer" or malware warnings
+if [[ -x "/usr/sbin/spctl" ]]; then
+  /usr/sbin/spctl --add --label "ARA Assessment" "\$FINAL_APP" >/dev/null 2>&1 || true
+  /usr/sbin/spctl --enable --label "ARA Assessment" >/dev/null 2>&1 || true
+fi
+
 # Register with LaunchServices so it appears immediately in /Applications,
-# Spotlight, and Launchpad on modern macOS (Sonoma / Sequoia / Tahoe).
+# Spotlight, and Launchpad on all macOS versions (Catalina through Sequoia / Tahoe).
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 if [[ -x "\$LSREGISTER" ]]; then
   "\$LSREGISTER" -f "\$FINAL_APP" >/dev/null 2>&1 || true
@@ -714,11 +791,11 @@ say "Generating Distribution.xml locked to Local System (/Applications)"
 # asking the user to manually change the install location.
 cat > "$DISTRIBUTION_XML" <<XML
 <?xml version="1.0" encoding="utf-8"?>
-<installer-gui-script minSpecVersion="2">
+<installer-gui-script minSpecVersion="1">
   <title>${APP_NAME}</title>
   <organization>${BUNDLE_ID}</organization>
   <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
-  <options customize="never" require-scripts="false" rootVolumeOnly="true" hostArchitectures="arm64,x86_64"/>
+  <options customize="never" require-scripts="false" rootVolumeOnly="true"/>
   <choices-outline>
     <line choice="default">
       <line choice="${PKG_IDENTIFIER}"/>

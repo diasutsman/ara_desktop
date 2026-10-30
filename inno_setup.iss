@@ -8,7 +8,7 @@
 #endif
 
 #define MyAppName "ARA Assessment"
-#define MyAppPublisher "ARA Assessment"
+#define MyAppPublisher "PT ARA Indonesia"
 #define MyAppURL "https://ara-assessment.com"
 #define MyAppExeName "ara_desktop.exe"
 #define MyOutputBaseFilename "ARA_Assessment_Setup"
@@ -18,20 +18,34 @@
 AppId={{4E3C6294-D962-4C79-B3A9-7A5E95587E23}}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
+AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
+AppCopyright=Copyright (C) 2026 {#MyAppPublisher}. All rights reserved.
+VersionInfoVersion=1.0.0.1
+VersionInfoCompany={#MyAppPublisher}
+VersionInfoDescription={#MyAppName} Desktop Installer
+VersionInfoTextVersion={#MyAppVersion}
+VersionInfoCopyright=Copyright (C) 2026 {#MyAppPublisher}. All rights reserved.
+VersionInfoProductName={#MyAppName}
+VersionInfoProductVersion=1.0.0.1
+VersionInfoProductTextVersion={#MyAppVersion}
+MinVersion=6.1sp1
+UninstallDisplayName={#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExeName}
 SetupIconFile=windows\runner\resources\app_icon.ico
 DefaultDirName={localappdata}\Programs\{#MyAppName}
 DisableProgramGroupPage=yes
 ; Non-administrative install mode (install for current user only, no admin/UAC required)
 PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=dialog
 OutputDir=build\windows
 OutputBaseFilename={#MyOutputBaseFilename}
-Compression=lzma
-SolidCompression=yes
+; Non-solid LZMA2 compression avoids solid-stream heuristic AV false positives
+Compression=lzma2
+SolidCompression=no
 WizardStyle=modern
 
 [Languages]
@@ -57,6 +71,15 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
 [Code]
 var
   ShouldDeleteData: Boolean;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+  begin
+    // Strip Mark-of-the-Web (Zone.Identifier) stream from installed executable so Windows never prompts on launch
+    DeleteFile(ExpandConstant('{app}\{#MyAppExeName}:Zone.Identifier'));
+  end;
+end;
 
 function InitializeUninstall(): Boolean;
 var

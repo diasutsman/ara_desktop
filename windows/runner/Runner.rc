@@ -89,13 +89,13 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "com.ara.assessment" "\0"
-            VALUE "FileDescription", "ara_desktop" "\0"
+            VALUE "CompanyName", "PT ARA Indonesia" "\0"
+            VALUE "FileDescription", "ARA Assessment" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
             VALUE "InternalName", "ara_desktop" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2026 com.ara.assessment. All rights reserved." "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 PT ARA Indonesia. All rights reserved." "\0"
             VALUE "OriginalFilename", "ara_desktop.exe" "\0"
-            VALUE "ProductName", "ara_desktop" "\0"
+            VALUE "ProductName", "ARA Assessment" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

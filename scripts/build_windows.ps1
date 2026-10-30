@@ -44,20 +44,37 @@ if (-not $IsccPath) {
 }
 
 Write-Host "==> Compiling Windows Installer with Inno Setup ($IsccPath)..." -ForegroundColor Yellow
-& $IsccPath "/DMyAppVersion=$Version" "inno_setup.iss"
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Inno Setup compilation failed with exit code $LASTEXITCODE"
-    exit $LASTEXITCODE
+$MaxAttempts = 3
+for ($Attempt = 1; $Attempt -le $MaxAttempts; $Attempt++) {
+    & $IsccPath "/DMyAppVersion=$Version" "inno_setup.iss"
+    if ($LASTEXITCODE -eq 0) {
+        break
+    }
+    if ($Attempt -lt $MaxAttempts) {
+        Write-Warning "Inno Setup encountered a temporary file lock (attempt $Attempt/$MaxAttempts). Retrying in 2 seconds..."
+        Start-Sleep -Seconds 2
+    } else {
+        Write-Error "Inno Setup compilation failed with exit code $LASTEXITCODE"
+        exit $LASTEXITCODE
+    }
 }
 
 $InstallerPath = Join-Path $ProjectRoot "build\windows\ARA_Assessment_Setup.exe"
 if (Test-Path $InstallerPath) {
+    Unblock-File -Path $InstallerPath -ErrorAction SilentlyContinue
+    $ZipPath = Join-Path $ProjectRoot "build\windows\ARA_Assessment_Setup.zip"
+    Compress-Archive -Path $InstallerPath -DestinationPath $ZipPath -Force
+    Unblock-File -Path $ZipPath -ErrorAction SilentlyContinue
+
     $Item = Get-Item $InstallerPath
     $SizeMB = [math]::Round($Item.Length / 1MB, 2)
+    $Hash = (Get-FileHash -Path $InstallerPath -Algorithm SHA256).Hash
     Write-Host "`n==========================================================" -ForegroundColor Green
     Write-Host " [SUCCESS] Windows Installer created successfully!" -ForegroundColor Green
-    Write-Host " File : $($Item.FullName)" -ForegroundColor Green
+    Write-Host " EXE  : $($Item.FullName)" -ForegroundColor Green
+    Write-Host " ZIP  : $ZipPath" -ForegroundColor Green
     Write-Host " Size : $SizeMB MB" -ForegroundColor Green
+    Write-Host " SHA256: $Hash" -ForegroundColor Green
     Write-Host "==========================================================" -ForegroundColor Green
 } else {
     Write-Warning "Build completed, but $InstallerPath was not found."

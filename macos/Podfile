@@ -1,4 +1,4 @@
-platform :osx, '12.0'
+platform :osx, "10.15"
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
@@ -24,6 +24,23 @@ end
 
 require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelper'), flutter_root)
 
+# Override FlutterMacOS dummy podspec deployment target so CocoaPods allows macOS 10.15+ builds
+alias_method :orig_flutter_install_macos_engine_pod, :flutter_install_macos_engine_pod
+def flutter_install_macos_engine_pod(mac_application_path = nil)
+  orig_flutter_install_macos_engine_pod(mac_application_path)
+  mac_application_path ||= File.dirname(defined_in_file.realpath) if respond_to?(:defined_in_file)
+  return unless mac_application_path
+
+  podspec_path = File.expand_path('FlutterMacOS.podspec', File.join(mac_application_path, 'Flutter', 'ephemeral'))
+  if File.exist?(podspec_path)
+    content = File.read(podspec_path)
+    File.write(
+      podspec_path,
+      content.gsub(/s\.osx\.deployment_target\s*=\s*['"][0-9.]+['"]/, "s.osx.deployment_target = '10.15'")
+    )
+  end
+end
+
 flutter_macos_podfile_setup
 
 target 'Runner' do
@@ -38,5 +55,10 @@ end
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_macos_build_settings(target)
+    target.build_configurations.each do |config|
+      config.build_settings['MACOSX_DEPLOYMENT_TARGET'] = '10.15'
+      config.build_settings['ARCHS'] = '$(ARCHS_STANDARD)'
+      config.build_settings['ONLY_ACTIVE_ARCH'] = 'NO'
+    end
   end
 end
