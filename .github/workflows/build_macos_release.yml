@@ -5,18 +5,19 @@ on:
   push:
     branches:
       - main
+      - macos-ci-build
 
 permissions:
   contents: write
 
 jobs:
   build-macos-pkg:
-    runs-on: macos-latest
+    runs-on: macos-15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Flutter
+      - name: Setup Flutter 3.47.5
         uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -27,7 +28,17 @@ jobs:
           chmod +x scripts/build_macos.sh
           ./scripts/build_macos.sh
 
-      - name: Upload PKG to GitHub Release v1.0.0
+      - name: Upload PKG Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-pkg-installer
+          path: |
+            build/macos/ARA_Assessment_1.0.4+1.pkg
+            build/macos/ARA_Assessment_1.0.0+1.pkg
+          if-no-files-found: error
+
+      - name: Upload PKG to GitHub Release v1.0.0 (if same repo)
+        if: github.repository == 'diasutsman/ara_desktop'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
