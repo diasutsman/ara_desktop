@@ -58,8 +58,12 @@ class EnvConfig {
     }
 
     // 1. Resolve Target Mode: 'local' vs 'production'
-    final modeStr = (dotenv.maybeGet('APP_MODE') ?? 'local').toLowerCase().trim();
-    if (modeStr == 'local' || modeStr == 'localhost' || modeStr == 'dev') {
+    // In release builds (kReleaseMode), default to 'production' unless explicitly overridden in supervisor panel
+    final defaultMode = kReleaseMode ? 'production' : 'local';
+    final modeStr = (dotenv.maybeGet('APP_MODE') ?? defaultMode).toLowerCase().trim();
+    if (!kReleaseMode && (modeStr == 'local' || modeStr == 'localhost' || modeStr == 'dev')) {
+      targetModeNotifier.value = AppTargetMode.local;
+    } else if (kReleaseMode && (modeStr == 'local_release_override')) {
       targetModeNotifier.value = AppTargetMode.local;
     } else {
       targetModeNotifier.value = AppTargetMode.production;

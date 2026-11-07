@@ -12,6 +12,12 @@ class AssessmentDetector {
   /// Callback when supervisor panel is requested via in-page shortcut
   VoidCallback? onSupervisorRequested;
 
+  /// Callback when the page DOM is ready (interactive/complete) with the current URL
+  ValueChanged<String>? onDomReady;
+
+  /// Callback when an Office document or Office URI scheme link is clicked inside the page
+  ValueChanged<String>? onExternalOrOfficeUrlRequested;
+
   /// Latest user/exam context reported by the WebView DOM
   final Map<String, String> lastExamContext = {};
 
@@ -276,9 +282,70 @@ class AssessmentDetector {
         }
       }
 
+      var hasReportedDomReady = false;
+      function notifyDomReady() {
+        try {
+          var href = window.location.href || '';
+          if (href && href !== 'about:blank' && (document.readyState === 'interactive' || document.readyState === 'complete')) {
+            if (!hasReportedDomReady && window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
+              hasReportedDomReady = true;
+              window.flutter_inappwebview.callHandler('onDomReady', href);
+            }
+          }
+        } catch (_) {}
+      }
+
+      // Intercept clicks on Office document links or ms-word/ms-excel/ms-powerpoint schemes
+      document.addEventListener('click', function(e) {
+        try {
+          var target = e.target;
+          while (target && target !== document && (!target.tagName || target.tagName.toUpperCase() !== 'A')) {
+            target = target.parentNode;
+          }
+          if (!target || !target.href) return;
+          var href = String(target.href).trim();
+          if (!href) return;
+          var lower = href.toLowerCase();
+          var isOfficeScheme = lower.indexOf('ms-word:') === 0 ||
+                               lower.indexOf('ms-excel:') === 0 ||
+                               lower.indexOf('ms-powerpoint:') === 0 ||
+                               lower.indexOf('ms-office:') === 0;
+          var cleanPath = lower.split('?')[0].split('#')[0];
+          var isOfficeExt = cleanPath.endsWith('.doc') ||
+                            cleanPath.endsWith('.docx') ||
+                            cleanPath.endsWith('.xls') ||
+                            cleanPath.endsWith('.xlsx') ||
+                            cleanPath.endsWith('.ppt') ||
+                            cleanPath.endsWith('.pptx');
+          if (isOfficeScheme || isOfficeExt) {
+            if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
+              e.preventDefault();
+              e.stopPropagation();
+              window.flutter_inappwebview.callHandler('onExternalOrOfficeUrl', href);
+            }
+          }
+        } catch (_) {}
+      }, true);
+
       // Run detection when DOM is loaded and periodically every 2 seconds
-      document.addEventListener('DOMContentLoaded', detectStateFromDOM);
-      setInterval(detectStateFromDOM, 2000);
+      document.addEventListener('DOMContentLoaded', function() {
+        notifyDomReady();
+        detectStateFromDOM();
+      });
+      window.addEventListener('load', function() {
+        notifyDomReady();
+        detectStateFromDOM();
+      });
+      if (document.readyState === 'interactive' || document.readyState === 'complete') {
+        setTimeout(function() {
+          notifyDomReady();
+          detectStateFromDOM();
+        }, 50);
+      }
+      setInterval(function() {
+        notifyDomReady();
+        detectStateFromDOM();
+      }, 2000);
     })();
   """;
 
@@ -324,6 +391,26 @@ class AssessmentDetector {
       callback: (args) {
         debugPrint('[AssessmentDetector] Supervisor panel triggered via WebView JS shortcut');
         onSupervisorRequested?.call();
+      },
+    );
+
+    controller.addJavaScriptHandler(
+      handlerName: 'onDomReady',
+      callback: (args) {
+        final url = args.isNotEmpty ? (args[0]?.toString() ?? '') : '';
+        debugPrint('[AssessmentDetector] JS reported DOM ready for URL: $url');
+        onDomReady?.call(url);
+      },
+    );
+
+    controller.addJavaScriptHandler(
+      handlerName: 'onExternalOrOfficeUrl',
+      callback: (args) {
+        final url = args.isNotEmpty ? (args[0]?.toString() ?? '') : '';
+        if (url.isNotEmpty) {
+          debugPrint('[AssessmentDetector] JS intercepted Office/external URL: $url');
+          onExternalOrOfficeUrlRequested?.call(url);
+        }
       },
     );
   }

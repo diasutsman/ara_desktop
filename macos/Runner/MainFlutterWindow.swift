@@ -473,13 +473,30 @@ extension InAppWebView {
           SecTrustSetAnchorCertificates(serverTrust, certChain as CFArray)
           SecTrustSetAnchorCertificatesOnly(serverTrust, false)
         }
-      } else if let leafCert = SecTrustGetCertificateAtIndex(serverTrust, 0) {
-        SecTrustSetAnchorCertificates(serverTrust, [leafCert] as CFArray)
-        SecTrustSetAnchorCertificatesOnly(serverTrust, false)
+      } else {
+        let certCount = SecTrustGetCertificateCount(serverTrust)
+        var certs: [SecCertificate] = []
+        for idx in 0..<certCount {
+          if let cert = SecTrustGetCertificateAtIndex(serverTrust, idx) {
+            certs.append(cert)
+          }
+        }
+        if !certs.isEmpty {
+          SecTrustSetAnchorCertificates(serverTrust, certs as CFArray)
+          SecTrustSetAnchorCertificatesOnly(serverTrust, false)
+        } else if let leafCert = SecTrustGetCertificateAtIndex(serverTrust, 0) {
+          SecTrustSetAnchorCertificates(serverTrust, [leafCert] as CFArray)
+          SecTrustSetAnchorCertificatesOnly(serverTrust, false)
+        }
       }
 
       // 3. Evaluate synchronously on the local trust object (< 0.05ms, zero network I/O)
-      _ = SecTrustEvaluateWithError(serverTrust, nil)
+      if #available(macOS 10.14, *) {
+        _ = SecTrustEvaluateWithError(serverTrust, nil)
+      } else {
+        var trustResult: SecTrustResultType = .invalid
+        _ = SecTrustEvaluate(serverTrust, &trustResult)
+      }
 
       // 4. Stamp trust exceptions onto serverTrust so com.apple.WebKit.Networking accepts it across IPC
       if let exceptions = SecTrustCopyExceptions(serverTrust) {

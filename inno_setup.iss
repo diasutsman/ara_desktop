@@ -47,6 +47,7 @@ OutputBaseFilename={#MyOutputBaseFilename}
 Compression=lzma2
 SolidCompression=no
 WizardStyle=modern
+CloseApplications=force
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -66,18 +67,47 @@ Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
+Filename: "{app}\MicrosoftEdgeWebView2Setup.exe"; Parameters: "/silent /install"; StatusMsg: "Memastikan komponen Microsoft Edge WebView2 tersedia..."; Flags: waituntilterminated skipifdoesntexist; Check: NeedsWebView2Install
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall
 
 [Code]
 var
   ShouldDeleteData: Boolean;
 
+function NeedsWebView2Install(): Boolean;
+var
+  Version: string;
+begin
+  Version := '';
+  if RegQueryStringValue(HKLM, 'SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}', 'pv', Version) and (Version <> '') and (Version <> '0.0.0.0') then
+  begin
+    Result := False;
+    Exit;
+  end;
+  if RegQueryStringValue(HKLM, 'SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}', 'pv', Version) and (Version <> '') and (Version <> '0.0.0.0') then
+  begin
+    Result := False;
+    Exit;
+  end;
+  if RegQueryStringValue(HKCU, 'Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}', 'pv', Version) and (Version <> '') and (Version <> '0.0.0.0') then
+  begin
+    Result := False;
+    Exit;
+  end;
+  Result := True;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  LegacyWebViewDir: string;
 begin
   if CurStep = ssPostInstall then
   begin
     // Strip Mark-of-the-Web (Zone.Identifier) stream from installed executable so Windows never prompts on launch
     DeleteFile(ExpandConstant('{app}\{#MyAppExeName}:Zone.Identifier'));
+    // Remove any stale app-folder WebView2 cache from older versions
+    LegacyWebViewDir := ExpandConstant('{app}\{#MyAppExeName}.WebView2');
+    if DirExists(LegacyWebViewDir) then DelTree(LegacyWebViewDir, True, True, True);
   end;
 end;
 

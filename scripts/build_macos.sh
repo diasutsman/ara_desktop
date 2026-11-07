@@ -265,32 +265,70 @@ xcodebuild -version
 
 say "Running Flutter pub get"
 
-# Ensure CocoaPods is used so all plugins compile with MACOSX_DEPLOYMENT_TARGET=10.15 and Universal (arm64 + x86_64)
+# Ensure .env is set to production mode before building release installer
+if [[ -f "$PROJECT_ROOT/.env" ]]; then
+  /usr/bin/perl -0pi -e '
+    s/^APP_ENV\s*=.*$/APP_ENV=production/mg;
+    s/^APP_MODE\s*=.*$/APP_MODE=production/mg;
+    s/^DEV_MODE\s*=.*$/DEV_MODE=false/mg;
+  ' "$PROJECT_ROOT/.env"
+fi
+
+# Ensure CocoaPods is used so all plugins compile with MACOSX_DEPLOYMENT_TARGET=10.11 and Universal (arm64 + x86_64)
+export FLUTTER_SWIFT_PACKAGE_MANAGER="false"
 "${FLUTTER[@]}" config --no-enable-swift-package-manager >/dev/null 2>&1 || true
 
 "${FLUTTER[@]}" pub get
 
 # Patch flutter_inappwebview_macos 1.1.2 SSL/TLS ServerTrust handling (auto-evaluate & main-thread completionHandler)
+# with OS X 10.11+ compatibility (#available(macOS 10.14, *) guard for SecTrustEvaluateWithError).
 patch_inappwebview_swift() {
   local INAPP_SWIFT="$1"
   [[ -f "$INAPP_SWIFT" ]] || return 0
-  if grep -Fq 'let exceptions = SecTrustCopyExceptions(serverTrust)' "$INAPP_SWIFT" &&
-     ! grep -Fq 'SecTrustSetNetworkFetchAllowed(serverTrust, false)' "$INAPP_SWIFT"; then
-    say "Patching flutter_inappwebview_macos SSL ServerTrust auto-accept in $INAPP_SWIFT"
+  if grep -Fq 'SecTrustSetNetworkFetchAllowed(serverTrust, false)' "$INAPP_SWIFT" &&
+     ! grep -Fq 'if #available(macOS 10.14, *)' "$INAPP_SWIFT"; then
+    say "Upgrading flutter_inappwebview_macos SSL ServerTrust patch for OS X 10.11+ in $INAPP_SWIFT"
     /usr/bin/perl -0pi -e '
-      s/let exceptions = SecTrustCopyExceptions\(serverTrust\)\s*\n\s*SecTrustSetExceptions\(serverTrust, exceptions\)\s*\n\s*let credential = URLCredential\(trust: serverTrust\)\s*\n\s*(?:DispatchQueue\.main\.async \{ completionHandler\(\.useCredential, credential\) \}|completionHandler\(\.useCredential, credential\))/SecTrustSetNetworkFetchAllowed(serverTrust, false)\n                                _ = SecTrustEvaluateWithError(serverTrust, nil)\n                                if let exceptions = SecTrustCopyExceptions(serverTrust) {\n                                    SecTrustSetExceptions(serverTrust, exceptions)\n                                }\n                                let credential = URLCredential(trust: serverTrust)\n                                DispatchQueue.main.async { completionHandler(.useCredential, credential) }/g
+      s/_ = SecTrustEvaluateWithError\(serverTrust, nil\)/if #available(macOS 10.14, *) {\n                                    _ = SecTrustEvaluateWithError(serverTrust, nil)\n                                } else {\n                                    var trustResult: SecTrustResultType = .invalid\n                                    _ = SecTrustEvaluate(serverTrust, &trustResult)\n                                }/g
+    ' "$INAPP_SWIFT" || true
+  elif grep -Fq 'let exceptions = SecTrustCopyExceptions(serverTrust)' "$INAPP_SWIFT" &&
+       ! grep -Fq 'SecTrustSetNetworkFetchAllowed(serverTrust, false)' "$INAPP_SWIFT"; then
+    say "Patching flutter_inappwebview_macos SSL ServerTrust auto-accept (OS X 10.11+) in $INAPP_SWIFT"
+    /usr/bin/perl -0pi -e '
+      s/let exceptions = SecTrustCopyExceptions\(serverTrust\)\s*\n\s*SecTrustSetExceptions\(serverTrust, exceptions\)\s*\n\s*let credential = URLCredential\(trust: serverTrust\)\s*\n\s*(?:DispatchQueue\.main\.async \{ completionHandler\(\.useCredential, credential\) \}|completionHandler\(\.useCredential, credential\))/SecTrustSetNetworkFetchAllowed(serverTrust, false)\n                                if #available(macOS 10.14, *) {\n                                    _ = SecTrustEvaluateWithError(serverTrust, nil)\n                                } else {\n                                    var trustResult: SecTrustResultType = .invalid\n                                    _ = SecTrustEvaluate(serverTrust, &trustResult)\n                                }\n                                if let exceptions = SecTrustCopyExceptions(serverTrust) {\n                                    SecTrustSetExceptions(serverTrust, exceptions)\n                                }\n                                let credential = URLCredential(trust: serverTrust)\n                                DispatchQueue.main.async { completionHandler(.useCredential, credential) }/g
     ' "$INAPP_SWIFT" || true
   fi
+}
+
+# Normalize plugin podspec and Package.swift minimum OS X versions to 10.11
+patch_plugin_min_macos() {
+  local SPEC_FILE="$1"
+  [[ -f "$SPEC_FILE" && -w "$SPEC_FILE" ]] || return 0
+  /usr/bin/perl -0pi -e '
+    s/s\.platform\s*=\s*:osx\s*,\s*[\x27"][0-9.]+[\x27"]/s.platform = :osx, \x2710.11\x27/g;
+    s/s\.osx\.deployment_target\s*=\s*[\x27"][0-9.]+[\x27"]/s.osx.deployment_target = \x2710.11\x27/g;
+    s/\.macOS\([\x27"][0-9.]+[\x27"]\)/.macOS("10.11")/g;
+  ' "$SPEC_FILE" 2>/dev/null || true
 }
 
 if [[ -f "$PROJECT_ROOT/macos/Flutter/ephemeral/.symlinks/plugins/flutter_inappwebview_macos/macos/Classes/InAppWebView/InAppWebView.swift" ]]; then
   patch_inappwebview_swift "$PROJECT_ROOT/macos/Flutter/ephemeral/.symlinks/plugins/flutter_inappwebview_macos/macos/Classes/InAppWebView/InAppWebView.swift"
 fi
 
+if [[ -d "$PROJECT_ROOT/macos/Flutter/ephemeral" ]]; then
+  while IFS= read -r -d '' SPEC_FILE; do
+    patch_plugin_min_macos "$SPEC_FILE"
+  done < <(find "$PROJECT_ROOT/macos/Flutter/ephemeral" \( -name '*.podspec' -o -name 'Package.swift' \) -print0 2>/dev/null || true)
+fi
+
 if [[ -d "${PUB_CACHE:-$HOME/.pub-cache}/hosted/pub.dev" ]]; then
   while IFS= read -r -d '' INAPP_SWIFT; do
     patch_inappwebview_swift "$INAPP_SWIFT"
   done < <(find "${PUB_CACHE:-$HOME/.pub-cache}/hosted/pub.dev" -path '*/flutter_inappwebview_macos*/macos/Classes/InAppWebView/InAppWebView.swift' -print0 2>/dev/null || true)
+
+  while IFS= read -r -d '' SPEC_FILE; do
+    patch_plugin_min_macos "$SPEC_FILE"
+  done < <(find "${PUB_CACHE:-$HOME/.pub-cache}/hosted/pub.dev" \( -path '*/flutter_inappwebview_macos*/*.podspec' -o -path '*/url_launcher_macos*/*.podspec' -o -path '*/url_launcher_macos*/Package.swift' -o -path '*/screen_retriever_macos*/*.podspec' -o -path '*/screen_retriever_macos*/Package.swift' -o -path '*/window_manager*/*.podspec' -o -path '*/window_manager*/Package.swift' \) -print0 2>/dev/null || true)
 fi
 
 if [[ -f "$PROJECT_ROOT/macos/Podfile" ]]; then
@@ -305,11 +343,11 @@ if [[ -f "$PROJECT_ROOT/macos/Podfile" ]]; then
 fi
 
 # ------------------------------------------------------------
-# 8. Prepare standard Xcode architectures (arm64 + x86_64) & macOS 10.15+ target
+# 8. Prepare standard Xcode architectures (arm64 + x86_64) & OS X 10.11+ target
 # ------------------------------------------------------------
 
 if [[ -f "$PROJECT_PBXPROJ" ]]; then
-  say "Preparing Xcode architecture (Universal arm64 + x86_64) & minimum macOS 10.15 deployment target"
+  say "Preparing Xcode architecture (Universal arm64 + x86_64) & minimum OS X 10.11 deployment target"
 
   cp "$PROJECT_PBXPROJ" "$PROJECT_BACKUP"
   PATCHED_PBXPROJ=1
@@ -317,7 +355,7 @@ if [[ -f "$PROJECT_PBXPROJ" ]]; then
   /usr/bin/perl -0pi -e '
     s/^[ \t]*ARCHS = [^;]+;/        ARCHS = "\$(ARCHS_STANDARD)";/mg;
     s/^[ \t]*ONLY_ACTIVE_ARCH = YES;/        ONLY_ACTIVE_ARCH = NO;/mg;
-    s/^[ \t]*MACOSX_DEPLOYMENT_TARGET = [^;]+;/        MACOSX_DEPLOYMENT_TARGET = "10.15";/mg;
+    s/^[ \t]*MACOSX_DEPLOYMENT_TARGET = [^;]+;/        MACOSX_DEPLOYMENT_TARGET = "10.11";/mg;
   ' "$PROJECT_PBXPROJ"
 fi
 
@@ -325,13 +363,38 @@ fi
 # 9. Build Flutter macOS release
 # ------------------------------------------------------------
 
-say "Building Flutter macOS release application (Universal arm64 + x86_64, macOS 10.15+)"
+say "Building Flutter macOS release application (Universal arm64 + x86_64, OS X 10.11+)"
 
-export MACOSX_DEPLOYMENT_TARGET="10.15"
-export FLUTTER_XCODE_MACOSX_DEPLOYMENT_TARGET="10.15"
+export MACOSX_DEPLOYMENT_TARGET="10.11"
+export FLUTTER_XCODE_MACOSX_DEPLOYMENT_TARGET="10.11"
 export FLUTTER_XCODE_ONLY_ACTIVE_ARCH="NO"
 
-"${FLUTTER[@]}" build macos --release
+# Force processPodsIfNeeded to execute macos/Podfile after injectPlugins so any generated
+# SwiftPM manifest or Pod target is normalized to 10.11 right before xcodebuild runs.
+rm -f "$PROJECT_ROOT/macos/Pods/Manifest.lock" 2>/dev/null || true
+
+if ! "${FLUTTER[@]}" build macos --release; then
+  say "Xcode SDK rejected compile-time 10.11 flag; retrying compile with 10.13 and post-patching binaries to 10.11"
+  export MACOSX_DEPLOYMENT_TARGET="10.13"
+  export FLUTTER_XCODE_MACOSX_DEPLOYMENT_TARGET="10.13"
+  if [[ -f "$PROJECT_PBXPROJ" ]]; then
+    /usr/bin/perl -0pi -e '
+      s/^[ \t]*MACOSX_DEPLOYMENT_TARGET = [^;]+;/        MACOSX_DEPLOYMENT_TARGET = "10.13";/mg;
+    ' "$PROJECT_PBXPROJ"
+  fi
+  if [[ -f "$PROJECT_ROOT/macos/Podfile" ]]; then
+    /usr/bin/perl -0pi -e '
+      s/10\.11/10.13/g;
+    ' "$PROJECT_ROOT/macos/Podfile"
+    rm -f "$PROJECT_ROOT/macos/Pods/Manifest.lock" 2>/dev/null || true
+  fi
+  "${FLUTTER[@]}" build macos --release
+  if [[ -f "$PROJECT_ROOT/macos/Podfile" ]]; then
+    /usr/bin/perl -0pi -e '
+      s/10\.13/10.11/g;
+    ' "$PROJECT_ROOT/macos/Podfile"
+  fi
+fi
 
 [[ -d "$BUILD_PRODUCTS" ]] ||
   fail "Release output was not found: $BUILD_PRODUCTS"
@@ -375,21 +438,35 @@ INFO_PLIST="$APP_BUNDLE/Contents/Info.plist"
 [[ -f "$INFO_PLIST" ]] ||
   fail "The application is missing Info.plist."
 
-# Ensure Finder & Launchpad display "ARA Assessment" consistently and support macOS 10.15+
+# Ensure Finder & Launchpad display "ARA Assessment" consistently and support OS X 10.11+ (El Capitan and newer)
 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName '$APP_NAME'" "$INFO_PLIST" 2>/dev/null ||
   /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string '$APP_NAME'" "$INFO_PLIST" 2>/dev/null || true
 
-/usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion 10.15" "$INFO_PLIST" 2>/dev/null ||
-  /usr/libexec/PlistBuddy -c "Add :LSMinimumSystemVersion string 10.15" "$INFO_PLIST" 2>/dev/null || true
+/usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion 10.11" "$INFO_PLIST" 2>/dev/null ||
+  /usr/libexec/PlistBuddy -c "Add :LSMinimumSystemVersion string 10.11" "$INFO_PLIST" 2>/dev/null || true
 
 # Also lower LSMinimumSystemVersion in all nested Framework Info.plist files (including FlutterMacOS.framework)
 while IFS= read -r -d '' FW_PLIST; do
-  /usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion 10.15" "$FW_PLIST" 2>/dev/null || true
-  /usr/libexec/PlistBuddy -c "Set :MinimumOSVersion 10.15" "$FW_PLIST" 2>/dev/null || true
+  /usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion 10.11" "$FW_PLIST" 2>/dev/null || true
+  /usr/libexec/PlistBuddy -c "Set :MinimumOSVersion 10.11" "$FW_PLIST" 2>/dev/null || true
 done < <(find "$APP_BUNDLE/Contents/Frameworks" -name 'Info.plist' -print0 2>/dev/null || true)
 
-# Lower Mach-O LC_BUILD_VERSION minos to 10.15 on all binaries/frameworks so dyld on older macOS (Catalina/Big Sur) never rejects prebuilt frameworks
-lower_macho_minos_1015() {
+# Bundle Swift 5 back-deployment runtime libraries (libswift*.dylib) if available in Xcode toolchain
+# so OS X 10.11.6 - macOS 10.14.3 (which did not ship /usr/lib/swift in the OS) can load Swift binaries.
+XCODE_DEV_DIR="$(xcode-select -p 2>/dev/null || true)"
+SWIFT_BACKDEPLOY_DIR="$XCODE_DEV_DIR/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/macosx"
+if [[ -d "$SWIFT_BACKDEPLOY_DIR" && -d "$APP_BUNDLE/Contents/Frameworks" ]]; then
+  while IFS= read -r -d '' SWIFT_DYLIB; do
+    DYLIB_BASE="$(basename "$SWIFT_DYLIB")"
+    if [[ ! -f "$APP_BUNDLE/Contents/Frameworks/$DYLIB_BASE" ]]; then
+      cp -f "$SWIFT_DYLIB" "$APP_BUNDLE/Contents/Frameworks/$DYLIB_BASE" 2>/dev/null || true
+    fi
+  done < <(find "$SWIFT_BACKDEPLOY_DIR" -maxdepth 1 -type f -name 'libswift*.dylib' -print0 2>/dev/null || true)
+fi
+
+# Lower Mach-O LC_BUILD_VERSION / LC_VERSION_MIN_MACOSX minos to 10.11 on all binaries/frameworks
+# so dyld on OS X 10.11.6+ never rejects prebuilt frameworks or slices.
+lower_macho_minos_1011() {
   local BIN="$1"
   command -v xcrun >/dev/null 2>&1 || return 0
   local ARCHS
@@ -402,7 +479,7 @@ lower_macho_minos_1015() {
     local SDK_VER
     SDK_VER="$(xcrun vtool -arch "$ARCH" -show-build "$BIN" 2>/dev/null | awk '/sdk / {print $2; exit}' || true)"
     [[ -n "$SDK_VER" && "$SDK_VER" != "n/a" ]] || SDK_VER="12.0"
-    if xcrun vtool -arch "$ARCH" -set-build-version macos 10.15 "$SDK_VER" -replace -output "${BIN}.vtmp" "$BIN" 2>/dev/null; then
+    if xcrun vtool -arch "$ARCH" -set-build-version macos 10.11 "$SDK_VER" -replace -output "${BIN}.vtmp" "$BIN" 2>/dev/null; then
       mv -f "${BIN}.vtmp" "$BIN"
     else
       rm -f "${BIN}.vtmp"
@@ -417,7 +494,7 @@ lower_macho_minos_1015() {
         local SDK_VER
         SDK_VER="$(xcrun vtool -show-build "$SLICE" 2>/dev/null | awk '/sdk / {print $2; exit}' || true)"
         [[ -n "$SDK_VER" && "$SDK_VER" != "n/a" ]] || SDK_VER="12.0"
-        if xcrun vtool -set-build-version macos 10.15 "$SDK_VER" -replace -output "$SLICE_OUT" "$SLICE" 2>/dev/null; then
+        if xcrun vtool -set-build-version macos 10.11 "$SDK_VER" -replace -output "$SLICE_OUT" "$SLICE" 2>/dev/null; then
           SLICE_FILES+=("$SLICE_OUT")
         else
           SLICE_FILES+=("$SLICE")
@@ -439,7 +516,7 @@ lower_macho_minos_1015() {
 while IFS= read -r -d '' BIN_PATH; do
   DESC="$(file -b "$BIN_PATH" 2>/dev/null || true)"
   [[ "$DESC" == *Mach-O* ]] || continue
-  lower_macho_minos_1015 "$BIN_PATH"
+  lower_macho_minos_1011 "$BIN_PATH"
 done < <(find "$APP_BUNDLE/Contents" -type f ! -type l -print0 2>/dev/null || true)
 
 BUNDLE_ID="$(
@@ -882,6 +959,12 @@ fi
 
 [[ -f "$PKG_PATH" ]] ||
   fail "The final PKG installer was not created at $PKG_PATH."
+
+# Also create ARA_Assessment_1.0.4+1.pkg alias if version differs so release links remain consistent
+PKG_ALIAS_104="$OUTPUT_DIR/ARA_Assessment_1.0.4+1.pkg"
+if [[ "$PKG_PATH" != "$PKG_ALIAS_104" ]]; then
+  cp -f "$PKG_PATH" "$PKG_ALIAS_104"
+fi
 
 # ------------------------------------------------------------
 # 15. Stage and create the DMG installer

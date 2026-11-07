@@ -1,0 +1,40 @@
+name: Build & Upload macOS Release PKG
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos-pkg:
+    runs-on: macos-14
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Build macOS Universal PKG Installer
+        run: |
+          chmod +x scripts/build_macos.sh
+          ./scripts/build_macos.sh
+
+      - name: Upload PKG to GitHub Release v1.0.0
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f "build/macos/ARA_Assessment_1.0.4+1.pkg" ]; then
+            gh release upload v1.0.0 "build/macos/ARA_Assessment_1.0.4+1.pkg" --clobber
+          fi
+          if [ -f "build/macos/ARA_Assessment_1.0.0+1.pkg" ]; then
+            gh release upload v1.0.0 "build/macos/ARA_Assessment_1.0.0+1.pkg" --clobber
+          fi
+

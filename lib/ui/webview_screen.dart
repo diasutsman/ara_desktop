@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
@@ -33,11 +34,14 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
   bool _hasLoadedSuccessfully = false;
   int _autoRetryCount = 0;
   String? _lastRequestedUrl;
+  Timer? _loadingWatchdogTimer;
+  int _loadingElapsedSeconds = 0;
 
   final FocusNode _keyboardFocusNode = FocusNode();
   bool _isSupervisorDialogOpen = false;
 
   bool get _isMobile => !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+  bool get _isWindows => !kIsWeb && Platform.isWindows;
 
   /// Platform-specific mobile user agent (desktop keeps the engine default).
   /// Android: modern Chrome Mobile UA to avoid restrictive `wv` bot filtering.
@@ -62,16 +66,20 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
     WidgetsBinding.instance.addObserver(this);
     _requestInitialPermissions();
     _detector.onSupervisorRequested = _showSupervisorDialog;
+    _detector.onDomReady = _handleDomReady;
+    _detector.onExternalOrOfficeUrlRequested = _handleJsExternalOrOfficeUrl;
     _kioskService.onRefreshRequested = _handleRefresh;
     _kioskService.onViolationDetected = _handleKioskViolation;
     HardwareKeyboard.instance.addHandler(_handleGlobalKeyEvent);
     if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       windowManager.addListener(this);
     }
+    _startLoadingWatchdog();
   }
 
   @override
   void dispose() {
+    _stopLoadingWatchdog();
     WidgetsBinding.instance.removeObserver(this);
     if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       windowManager.removeListener(this);
@@ -80,8 +88,137 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
     _kioskService.onViolationDetected = null;
     HardwareKeyboard.instance.removeHandler(_handleGlobalKeyEvent);
     _detector.onSupervisorRequested = null;
+    _detector.onDomReady = null;
+    _detector.onExternalOrOfficeUrlRequested = null;
     _keyboardFocusNode.dispose();
     super.dispose();
+  }
+
+  void _handleDomReady(String url) {
+    if (!mounted) return;
+    final cleanUrl = url.trim();
+    final isValid = cleanUrl.isNotEmpty &&
+        cleanUrl != 'about:blank' &&
+        (cleanUrl.startsWith('http://') || cleanUrl.startsWith('https://'));
+    if (isValid) {
+      _lastRequestedUrl = cleanUrl;
+      _detector.evaluateUrl(cleanUrl);
+    }
+    if (_isLoading || _loadProgress < 1.0) {
+      setState(() {
+        _isLoading = false;
+        _loadProgress = 1.0;
+        if (isValid && !_hasError) {
+          _hasLoadedSuccessfully = true;
+          _autoRetryCount = 0;
+        }
+      });
+    }
+    _stopLoadingWatchdog();
+  }
+
+  void _handleJsExternalOrOfficeUrl(String urlStr) {
+    final uri = Uri.tryParse(urlStr.trim());
+    if (uri == null) return;
+    final scheme = uri.scheme.toLowerCase();
+    if (_officeSchemes.contains(scheme)) {
+      unawaited(_launchOfficeScheme(uri));
+      return;
+    }
+    if ((scheme == 'http' || scheme == 'https') && OfficeDocumentService.isOfficeDocumentUrl(uri)) {
+      unawaited(_openPortalDocument(uri));
+    }
+  }
+
+  void _startLoadingWatchdog() {
+    _loadingWatchdogTimer?.cancel();
+    _loadingElapsedSeconds = 0;
+    _loadingWatchdogTimer = Timer.periodic(const Duration(seconds: 1), (timer) async {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      if (!_isLoading) {
+        timer.cancel();
+        return;
+      }
+
+      setState(() {
+        _loadingElapsedSeconds++;
+      });
+
+      final controller = _webViewController;
+      if (controller == null) {
+        if (_loadingElapsedSeconds >= 12) {
+          timer.cancel();
+          setState(() {
+            _isLoading = false;
+            _hasError = true;
+            _errorMessage =
+                'Komponen tampilan web (Microsoft Edge WebView2) belum merespons di perangkat ini. Silakan klik Coba Lagi.';
+          });
+        }
+        return;
+      }
+
+      // Poll actual DOM readiness every 2 seconds in case native onLoadStop / onProgressChanged(100) was dropped
+      if (_loadingElapsedSeconds % 2 == 0) {
+        try {
+          final currentUri = await controller.getUrl();
+          final currentUrlStr = currentUri?.toString().trim() ?? '';
+          final isValidUrl = currentUrlStr.isNotEmpty &&
+              currentUrlStr != 'about:blank' &&
+              (currentUrlStr.startsWith('http://') || currentUrlStr.startsWith('https://'));
+
+          if (!isValidUrl && _loadingElapsedSeconds <= 6) {
+            final targetToLoad = (_lastRequestedUrl != null && _lastRequestedUrl!.isNotEmpty)
+                ? _lastRequestedUrl!
+                : EnvConfig().currentUrl;
+            debugPrint('[WebViewScreen] Watchdog detected blank URL at ${_loadingElapsedSeconds}s; triggering loadUrl($targetToLoad)');
+            await controller.loadUrl(urlRequest: URLRequest(url: WebUri(targetToLoad)));
+            return;
+          }
+
+          if (isValidUrl) {
+            final readyStateObj = await controller.evaluateJavascript(source: 'document.readyState');
+            final readyState = (readyStateObj?.toString() ?? '').replaceAll('"', '').trim().toLowerCase();
+            if (readyState == 'interactive' || readyState == 'complete') {
+              debugPrint('[WebViewScreen] Watchdog confirmed DOM readyState=$readyState for $currentUrlStr; dismissing overlay');
+              _handleDomReady(currentUrlStr);
+              return;
+            }
+          }
+        } catch (e) {
+          debugPrint('[WebViewScreen] Watchdog poll error: $e');
+        }
+      }
+
+      // Safety ceiling: never leave user trapped on the loading overlay beyond 14 seconds
+      if (_loadingElapsedSeconds >= 14) {
+        timer.cancel();
+        if (_hasLoadedSuccessfully || _loadProgress >= 0.3) {
+          setState(() {
+            _isLoading = false;
+            _loadProgress = 1.0;
+          });
+        } else if (_autoRetryCount < 2) {
+          _autoRetryCount++;
+          unawaited(_reloadOrLoadTargetUrl(forceLoadUrl: true));
+        } else {
+          setState(() {
+            _isLoading = false;
+            _hasError = true;
+            _errorMessage =
+                'Waktu pemuatan halaman habis (koneksi lambat atau terhalang firewall). Silakan klik Coba Lagi.';
+          });
+        }
+      }
+    });
+  }
+
+  void _stopLoadingWatchdog() {
+    _loadingWatchdogTimer?.cancel();
+    _loadingWatchdogTimer = null;
   }
 
   Future<void> _handleKioskViolation(
@@ -154,6 +291,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
       _isLoading = true;
       _loadProgress = 0.0;
     });
+    _startLoadingWatchdog();
 
     final controller = _webViewController;
     if (controller == null) return;
@@ -211,6 +349,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
       _hasError = false;
       _errorMessage = '';
     });
+    _startLoadingWatchdog();
     final targetUrl = EnvConfig().currentUrl;
     debugPrint('[WebViewScreen] Switching target server to ${newMode.name.toUpperCase()}: $targetUrl');
     await _webViewController?.loadUrl(
@@ -1004,9 +1143,17 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
           children: [
             // Main Webview
             InAppWebView(
-              initialUrlRequest: URLRequest(
-                url: WebUri(EnvConfig().currentUrl),
-              ),
+              initialUrlRequest: _isWindows
+                  ? null
+                  : URLRequest(
+                      url: WebUri(EnvConfig().currentUrl),
+                    ),
+              initialUserScripts: UnmodifiableListView<UserScript>([
+                UserScript(
+                  source: AssessmentDetector.injectedScript,
+                  injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+                ),
+              ]),
               initialSettings: InAppWebViewSettings(
                 javaScriptEnabled: true,
                 allowsInlineMediaPlayback: true,
@@ -1025,8 +1172,9 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                 javaScriptCanOpenWindowsAutomatically: true,
                 cacheEnabled: true,
                 userAgent: _platformUserAgent,
-                // Enable URL interception & download handlers across platforms for Office integration
-                useShouldOverrideUrlLoading: true,
+                // Disable CDP Fetch.requestPaused URL interception on Windows to prevent initial navigation race conditions;
+                // Office document links on Windows are handled via JS click interception + onDownloadStartRequest.
+                useShouldOverrideUrlLoading: !_isWindows,
                 useOnDownloadStart: true,
                 // iOS & Android: prevent swipe-back/overscroll and link previews.
                 allowsBackForwardNavigationGestures: false,
@@ -1038,13 +1186,26 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                 _webViewController = controller;
                 _detector.registerJsHandlers(controller);
 
-                // Inject detection script
+                // Ensure detection script is also registered dynamically
                 controller.addUserScript(
                   userScript: UserScript(
                     source: AssessmentDetector.injectedScript,
                     injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
                   ),
                 );
+
+                // On Windows, load the initial URL only AFTER onWebViewCreated so the Dart MethodChannel
+                // and JS handlers are 100% registered before WebView2 fires navigation events.
+                if (_isWindows) {
+                  final targetUrl = EnvConfig().currentUrl;
+                  _lastRequestedUrl = targetUrl;
+                  debugPrint('[WebViewScreen] Windows onWebViewCreated -> loading initial URL: $targetUrl');
+                  unawaited(
+                    controller.loadUrl(
+                      urlRequest: URLRequest(url: WebUri(targetUrl)),
+                    ),
+                  );
+                }
               },
               onPermissionRequest: (controller, request) async {
                 debugPrint('[InAppWebView] WebRTC Permission requested: ${request.resources}');
@@ -1058,7 +1219,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
               onJsConfirm: _handleJsConfirm,
               onJsPrompt: _handleJsPrompt,
               onCreateWindow: _handleCreateWindow,
-              shouldOverrideUrlLoading: _handleNavigation,
+              shouldOverrideUrlLoading: _isWindows ? null : _handleNavigation,
               onDownloadStartRequest: _handleDownload,
               onLoadStart: (controller, url) {
                 final urlStr = url?.toString().trim() ?? '';
@@ -1071,6 +1232,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                   _isLoading = true;
                   _hasError = false;
                 });
+                _startLoadingWatchdog();
                 if (url != null) {
                   _detector.evaluateUrl(url.toString());
                 }
@@ -1083,8 +1245,10 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                 if (isValidLoadedUrl) {
                   _lastRequestedUrl = loadedUrl;
                 }
+                _stopLoadingWatchdog();
                 setState(() {
                   _isLoading = false;
+                  _loadProgress = 1.0;
                   if (isValidLoadedUrl && !_hasError) {
                     _hasLoadedSuccessfully = true;
                     _autoRetryCount = 0;
@@ -1102,8 +1266,9 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
               onProgressChanged: (controller, progress) {
                 setState(() {
                   _loadProgress = progress / 100.0;
-                  if (progress == 100) {
+                  if (progress >= 95) {
                     _isLoading = false;
+                    _stopLoadingWatchdog();
                   }
                 });
               },
@@ -1251,6 +1416,25 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                         ),
                       ),
                     ),
+                    if (_loadingElapsedSeconds >= 5) ...[
+                      const SizedBox(height: 20),
+                      OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.white,
+                          side: const BorderSide(color: Colors.white38),
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                        ),
+                        onPressed: () {
+                          _autoRetryCount = 0;
+                          unawaited(_reloadOrLoadTargetUrl(forceLoadUrl: true));
+                        },
+                        icon: const Icon(Icons.refresh_rounded, size: 16, color: Color(0xFF00AEF0)),
+                        label: const Text(
+                          'Muat Ulang Sekarang',
+                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),

@@ -19,6 +19,16 @@ Write-Host " Building ARA Assessment Windows Release & Installer" -ForegroundCol
 Write-Host " Version: $Version" -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
 
+# Ensure .env is set to production mode before building release installer
+if (Test-Path ".env") {
+    $EnvContent = Get-Content ".env" -Raw
+    $EnvContent = $EnvContent -replace "(?m)^APP_ENV\s*=.*$", "APP_ENV=production"
+    $EnvContent = $EnvContent -replace "(?m)^APP_MODE\s*=.*$", "APP_MODE=production"
+    $EnvContent = $EnvContent -replace "(?m)^DEV_MODE\s*=.*$", "DEV_MODE=false"
+    Set-Content -Path ".env" -Value $EnvContent -NoNewline
+    Write-Host "==> Verified .env is set to APP_ENV=production & APP_MODE=production" -ForegroundColor Green
+}
+
 Write-Host "==> Running Flutter build windows (release)..." -ForegroundColor Yellow
 & fvm flutter build windows --release
 if ($LASTEXITCODE -ne 0) {
