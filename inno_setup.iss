@@ -4,7 +4,7 @@
 ; 2. Open this file in Inno Setup or run via scripts/build_windows.sh or scripts/build_windows.ps1
 
 #ifndef MyAppVersion
-#define MyAppVersion "1.0.0+1"
+#define MyAppVersion "1.0.1+2"
 #endif
 
 #define MyAppName "ARA Assessment"
@@ -24,13 +24,13 @@ AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
 AppCopyright=Copyright (C) 2026 {#MyAppPublisher}. All rights reserved.
-VersionInfoVersion=1.0.0.1
+VersionInfoVersion=1.0.1.2
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription={#MyAppName} Desktop Installer
 VersionInfoTextVersion={#MyAppVersion}
 VersionInfoCopyright=Copyright (C) 2026 {#MyAppPublisher}. All rights reserved.
 VersionInfoProductName={#MyAppName}
-VersionInfoProductVersion=1.0.0.1
+VersionInfoProductVersion=1.0.1.2
 VersionInfoProductTextVersion={#MyAppVersion}
 MinVersion=6.1sp1
 UninstallDisplayName={#MyAppName}

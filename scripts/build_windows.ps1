@@ -85,6 +85,13 @@ if (Test-Path $InstallerPath) {
     Compress-Archive -Path $InstallerPath -DestinationPath $ZipPath -Force
     Unblock-File -Path $ZipPath -ErrorAction SilentlyContinue
 
+    $VersionedExePath = Join-Path $ProjectRoot "build\windows\ARA_Assessment_Setup_v1.0.1.exe"
+    $VersionedZipPath = Join-Path $ProjectRoot "build\windows\ARA_Assessment_Setup_v1.0.1.zip"
+    Copy-Item -Path $InstallerPath -Destination $VersionedExePath -Force
+    Copy-Item -Path $ZipPath -Destination $VersionedZipPath -Force
+    Unblock-File -Path $VersionedExePath -ErrorAction SilentlyContinue
+    Unblock-File -Path $VersionedZipPath -ErrorAction SilentlyContinue
+
     $Item = Get-Item $InstallerPath
     $SizeMB = [math]::Round($Item.Length / 1MB, 2)
     $Hash = (Get-FileHash -Path $InstallerPath -Algorithm SHA256).Hash
