@@ -57,7 +57,7 @@ class AraAssessmentApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'ARA Mobile',
+      title: 'ARA Assessment',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.light,

@@ -202,7 +202,7 @@ class KioskSecurityService with WindowListener {
           _showSecurityAlert(msg, duration: const Duration(seconds: 4));
           _emitViolation(
             'app_exit',
-            'Keluar / Minimize Aplikasi (ARA Mobile)',
+            'Keluar / Minimize Aplikasi (ARA Assessment)',
             msg,
           );
         }

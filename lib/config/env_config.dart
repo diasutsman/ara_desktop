@@ -12,7 +12,7 @@ class EnvConfig {
   factory EnvConfig() => _instance;
   EnvConfig._internal();
 
-  static const String defaultProductionUrl = 'https://ara-assessment.com/assess/login';
+  static const String defaultProductionUrl = 'https://ara-assessment.com/assess';
   static const String defaultLocalDesktopUrl = 'http://localhost/new_ara';
   static const String defaultLocalMobileUrl = 'http://192.168.100.7/new_ara';
 
@@ -95,8 +95,8 @@ class EnvConfig {
       recordViolationsInDev = true;
     }
 
-    // 5. Target URLs
-    productionUrl = dotenv.maybeGet('PRODUCTION_URL')?.trim() ?? defaultProductionUrl;
+    // 5. Target URLs (hardcode production URL to https://ara-assessment.com/assess)
+    productionUrl = defaultProductionUrl;
     localDesktopUrl = dotenv.maybeGet('LOCAL_URL_DESKTOP')?.trim() ?? defaultLocalDesktopUrl;
     localMobileUrl = dotenv.maybeGet('LOCAL_URL_MOBILE')?.trim() ?? defaultLocalMobileUrl;
     customLocalUrl = dotenv.maybeGet('LOCAL_URL')?.trim();

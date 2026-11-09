@@ -23,7 +23,11 @@ class WebViewScreen extends StatefulWidget {
 }
 
 class _WebViewScreenState extends State<WebViewScreen> with WindowListener, WidgetsBindingObserver {
+  static const String kHardcodedProductionUrl = 'https://ara-assessment.com/assess';
+
   InAppWebViewController? _webViewController;
+  WebViewEnvironment? _webViewEnvironment;
+  bool _isWebViewEnvReady = false;
   final KioskSecurityService _kioskService = KioskSecurityService();
   final AssessmentDetector _detector = AssessmentDetector();
 
@@ -74,7 +78,43 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
     if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       windowManager.addListener(this);
     }
-    _startLoadingWatchdog();
+    unawaited(_initWindowsWebViewEnvironment());
+    _startLoadingWatchdog(resetElapsed: true);
+  }
+
+  Future<void> _initWindowsWebViewEnvironment() async {
+    if (!_isWindows) {
+      if (mounted) {
+        setState(() {
+          _isWebViewEnvReady = true;
+        });
+      }
+      return;
+    }
+
+    try {
+      final localAppData = Platform.environment['LOCALAPPDATA'] ?? Directory.systemTemp.path;
+      final userDataFolder = '$localAppData\\ARA Assessment\\WebView2';
+      await Directory(userDataFolder).create(recursive: true);
+
+      _webViewEnvironment = await WebViewEnvironment.create(
+        settings: WebViewEnvironmentSettings(
+          userDataFolder: userDataFolder,
+          additionalBrowserArguments:
+              '--ignore-certificate-errors --allow-running-insecure-content --autoplay-policy=no-user-gesture-required --disable-features=msSmartScreenProtection,CalculateNativeWinOcclusion',
+        ),
+      ).timeout(const Duration(seconds: 5));
+      debugPrint('[WebViewScreen] WebViewEnvironment created at: $userDataFolder');
+    } catch (e) {
+      debugPrint('[WebViewScreen] WebViewEnvironment fallback to default ($e)');
+      _webViewEnvironment = null;
+    }
+
+    if (mounted) {
+      setState(() {
+        _isWebViewEnvReady = true;
+      });
+    }
   }
 
   @override
@@ -130,54 +170,52 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
     }
   }
 
-  void _startLoadingWatchdog() {
-    _loadingWatchdogTimer?.cancel();
-    _loadingElapsedSeconds = 0;
-    _loadingWatchdogTimer = Timer.periodic(const Duration(seconds: 1), (timer) async {
-      if (!mounted) {
-        timer.cancel();
-        return;
-      }
-      if (!_isLoading) {
-        timer.cancel();
-        return;
-      }
+  String get _activeTargetUrl {
+    if (!kReleaseMode && EnvConfig().isLocal) {
+      return EnvConfig().localUrl;
+    }
+    return kHardcodedProductionUrl;
+  }
 
-      setState(() {
-        _loadingElapsedSeconds++;
-      });
-
-      final controller = _webViewController;
-      if (controller == null) {
-        if (_loadingElapsedSeconds >= 12) {
+  void _startLoadingWatchdog({bool resetElapsed = false}) {
+    if (resetElapsed || _loadingWatchdogTimer == null || !_loadingWatchdogTimer!.isActive) {
+      _loadingWatchdogTimer?.cancel();
+      if (resetElapsed) {
+        _loadingElapsedSeconds = 0;
+      }
+      _loadingWatchdogTimer = Timer.periodic(const Duration(seconds: 1), (timer) async {
+        if (!mounted) {
           timer.cancel();
-          setState(() {
-            _isLoading = false;
-            _hasError = true;
-            _errorMessage =
-                'Komponen tampilan web (Microsoft Edge WebView2) belum merespons di perangkat ini. Silakan klik Coba Lagi.';
-          });
+          return;
         }
-        return;
-      }
+        if (!_isLoading) {
+          timer.cancel();
+          return;
+        }
 
-      // Poll actual DOM readiness every 2 seconds in case native onLoadStop / onProgressChanged(100) was dropped
-      if (_loadingElapsedSeconds % 2 == 0) {
+        setState(() {
+          _loadingElapsedSeconds++;
+        });
+
+        final controller = _webViewController;
+        if (controller == null) {
+          if (_loadingElapsedSeconds >= 8) {
+            timer.cancel();
+            setState(() {
+              _isLoading = false;
+              _loadProgress = 1.0;
+            });
+          }
+          return;
+        }
+
+        // Poll actual DOM readiness every 1 second without aborting in-flight navigations
         try {
           final currentUri = await controller.getUrl();
           final currentUrlStr = currentUri?.toString().trim() ?? '';
           final isValidUrl = currentUrlStr.isNotEmpty &&
               currentUrlStr != 'about:blank' &&
               (currentUrlStr.startsWith('http://') || currentUrlStr.startsWith('https://'));
-
-          if (!isValidUrl && _loadingElapsedSeconds <= 6) {
-            final targetToLoad = (_lastRequestedUrl != null && _lastRequestedUrl!.isNotEmpty)
-                ? _lastRequestedUrl!
-                : EnvConfig().currentUrl;
-            debugPrint('[WebViewScreen] Watchdog detected blank URL at ${_loadingElapsedSeconds}s; triggering loadUrl($targetToLoad)');
-            await controller.loadUrl(urlRequest: URLRequest(url: WebUri(targetToLoad)));
-            return;
-          }
 
           if (isValidUrl) {
             final readyStateObj = await controller.evaluateJavascript(source: 'document.readyState');
@@ -191,29 +229,17 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
         } catch (e) {
           debugPrint('[WebViewScreen] Watchdog poll error: $e');
         }
-      }
 
-      // Safety ceiling: never leave user trapped on the loading overlay beyond 14 seconds
-      if (_loadingElapsedSeconds >= 14) {
-        timer.cancel();
-        if (_hasLoadedSuccessfully || _loadProgress >= 0.3) {
+        // Safety ceiling: dismiss overlay after 6 seconds so user is NEVER stuck behind "Memuat portal asesmen..."
+        if (_loadingElapsedSeconds >= 6) {
+          timer.cancel();
           setState(() {
             _isLoading = false;
             _loadProgress = 1.0;
           });
-        } else if (_autoRetryCount < 2) {
-          _autoRetryCount++;
-          unawaited(_reloadOrLoadTargetUrl(forceLoadUrl: true));
-        } else {
-          setState(() {
-            _isLoading = false;
-            _hasError = true;
-            _errorMessage =
-                'Waktu pemuatan halaman habis (koneksi lambat atau terhalang firewall). Silakan klik Coba Lagi.';
-          });
         }
-      }
-    });
+      });
+    }
   }
 
   void _stopLoadingWatchdog() {
@@ -291,12 +317,12 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
       _isLoading = true;
       _loadProgress = 0.0;
     });
-    _startLoadingWatchdog();
+    _startLoadingWatchdog(resetElapsed: true);
 
     final controller = _webViewController;
     if (controller == null) return;
 
-    final fallbackUrl = EnvConfig().currentUrl;
+    final fallbackUrl = _activeTargetUrl;
     try {
       final currentUri = await controller.getUrl();
       final currentUrlStr = currentUri?.toString().trim() ?? '';
@@ -1142,12 +1168,12 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                       child: Stack(
           children: [
             // Main Webview
-            InAppWebView(
-              initialUrlRequest: _isWindows
-                  ? null
-                  : URLRequest(
-                      url: WebUri(EnvConfig().currentUrl),
-                    ),
+            if (!_isWindows || _isWebViewEnvReady)
+              InAppWebView(
+                webViewEnvironment: _webViewEnvironment,
+                initialUrlRequest: URLRequest(
+                  url: WebUri(_activeTargetUrl),
+                ),
               initialUserScripts: UnmodifiableListView<UserScript>([
                 UserScript(
                   source: AssessmentDetector.injectedScript,
@@ -1182,31 +1208,41 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                 disallowOverScroll: true,
                 overScrollMode: OverScrollMode.NEVER,
               ),
-              onWebViewCreated: (controller) {
-                _webViewController = controller;
-                _detector.registerJsHandlers(controller);
+                onWebViewCreated: (controller) {
+                  _webViewController = controller;
+                  _detector.registerJsHandlers(controller);
 
-                // Ensure detection script is also registered dynamically
-                controller.addUserScript(
-                  userScript: UserScript(
-                    source: AssessmentDetector.injectedScript,
-                    injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
-                  ),
-                );
-
-                // On Windows, load the initial URL only AFTER onWebViewCreated so the Dart MethodChannel
-                // and JS handlers are 100% registered before WebView2 fires navigation events.
-                if (_isWindows) {
-                  final targetUrl = EnvConfig().currentUrl;
-                  _lastRequestedUrl = targetUrl;
-                  debugPrint('[WebViewScreen] Windows onWebViewCreated -> loading initial URL: $targetUrl');
-                  unawaited(
-                    controller.loadUrl(
-                      urlRequest: URLRequest(url: WebUri(targetUrl)),
+                  // Ensure detection script is also registered dynamically
+                  controller.addUserScript(
+                    userScript: UserScript(
+                      source: AssessmentDetector.injectedScript,
+                      injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
                     ),
                   );
-                }
-              },
+
+                  // On Windows, explicitly trigger loadUrl after MethodChannel is ready so navigation events
+                  // are guaranteed to reach Dart even if initialUrlRequest fired before initChannel.
+                  if (_isWindows) {
+                    final targetUrl = _activeTargetUrl;
+                    _lastRequestedUrl = targetUrl;
+                    Future<void>.delayed(const Duration(milliseconds: 150), () async {
+                      if (!mounted) return;
+                      try {
+                        final cur = await controller.getUrl();
+                        final curStr = cur?.toString().trim() ?? '';
+                        if (curStr.isEmpty || curStr == 'about:blank') {
+                          await controller.loadUrl(
+                            urlRequest: URLRequest(url: WebUri(targetUrl)),
+                          );
+                        }
+                      } catch (_) {
+                        await controller.loadUrl(
+                          urlRequest: URLRequest(url: WebUri(targetUrl)),
+                        );
+                      }
+                    });
+                  }
+                },
               onPermissionRequest: (controller, request) async {
                 debugPrint('[InAppWebView] WebRTC Permission requested: ${request.resources}');
                 // Grant camera and microphone access to the web portal automatically
@@ -1229,10 +1265,12 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                   _lastRequestedUrl = urlStr;
                 }
                 setState(() {
-                  _isLoading = true;
+                  if (!_hasLoadedSuccessfully) {
+                    _isLoading = true;
+                  }
                   _hasError = false;
                 });
-                _startLoadingWatchdog();
+                _startLoadingWatchdog(resetElapsed: false);
                 if (url != null) {
                   _detector.evaluateUrl(url.toString());
                 }
@@ -1266,8 +1304,9 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
               onProgressChanged: (controller, progress) {
                 setState(() {
                   _loadProgress = progress / 100.0;
-                  if (progress >= 95) {
+                  if (progress >= 60) {
                     _isLoading = false;
+                    _hasLoadedSuccessfully = true;
                     _stopLoadingWatchdog();
                   }
                 });
@@ -1369,7 +1408,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
               ),
 
             // Branded Loading Overlay (prevents blank white canvas while loading)
-            if (_isLoading && _loadProgress < 0.95)
+            if (_isLoading && _loadProgress < 0.60)
               Container(
                 color: const Color(0xFF2B2B2B),
                 alignment: Alignment.center,
@@ -1387,7 +1426,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                     ),
                     const SizedBox(height: 20),
                     const Text(
-                      'ARA Mobile',
+                      'ARA Assessment',
                       style: TextStyle(
                         color: Colors.white,
                         fontSize: 18,
@@ -1674,7 +1713,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                 ),
                 const SizedBox(width: 8),
                 const Text(
-                  'ARA Mobile',
+                  'ARA Assessment',
                   style: TextStyle(
                     color: Colors.white,
                     fontSize: 13,

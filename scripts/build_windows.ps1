@@ -25,16 +25,25 @@ if (Test-Path ".env") {
     $EnvContent = $EnvContent -replace "(?m)^APP_ENV\s*=.*$", "APP_ENV=production"
     $EnvContent = $EnvContent -replace "(?m)^APP_MODE\s*=.*$", "APP_MODE=production"
     $EnvContent = $EnvContent -replace "(?m)^DEV_MODE\s*=.*$", "DEV_MODE=false"
+    $EnvContent = $EnvContent -replace "(?m)^PRODUCTION_URL\s*=.*$", "PRODUCTION_URL=https://ara-assessment.com/assess"
     Set-Content -Path ".env" -Value $EnvContent -NoNewline
     Write-Host "==> Verified .env is set to APP_ENV=production & APP_MODE=production" -ForegroundColor Green
 }
 
 Write-Host "==> Running Flutter build windows (release)..." -ForegroundColor Yellow
+Remove-Item -Force "windows\flutter\ephemeral\flutter_windows.dll*" -ErrorAction SilentlyContinue
+Remove-Item -Force "build\windows\x64\runner\Debug\flutter_windows.dll" -ErrorAction SilentlyContinue
 & fvm flutter build windows --release
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Flutter build windows failed with exit code $LASTEXITCODE"
     exit $LASTEXITCODE
 }
+
+# Clean up Release flutter_windows.dll from windows\flutter\ephemeral so a subsequent
+# `fvm flutter run -d windows` (Debug mode) regenerates the Debug JIT engine DLL cleanly!
+Remove-Item -Force "windows\flutter\ephemeral\flutter_windows.dll*" -ErrorAction SilentlyContinue
+Remove-Item -Force "build\windows\x64\runner\Debug\flutter_windows.dll" -ErrorAction SilentlyContinue
+Remove-Item -Force "build\windows\app.so" -ErrorAction SilentlyContinue
 
 Write-Host "==> Detecting Inno Setup Compiler (ISCC)..." -ForegroundColor Yellow
 $IsccPath = $null

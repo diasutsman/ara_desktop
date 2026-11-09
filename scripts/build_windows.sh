@@ -22,7 +22,12 @@ echo " Version: $VERSION"
 echo "=========================================================="
 
 echo "==> Running Flutter build windows (release)..."
+rm -f "$PROJECT_ROOT/windows/flutter/ephemeral/flutter_windows.dll"* "$PROJECT_ROOT/build/windows/x64/runner/Debug/flutter_windows.dll"
 fvm flutter build windows --release
+
+# Clean up Release flutter_windows.dll from windows/flutter/ephemeral so a subsequent
+# `fvm flutter run -d windows` (Debug mode) regenerates the Debug JIT engine DLL cleanly!
+rm -f "$PROJECT_ROOT/windows/flutter/ephemeral/flutter_windows.dll"* "$PROJECT_ROOT/build/windows/x64/runner/Debug/flutter_windows.dll" "$PROJECT_ROOT/build/windows/app.so"
 
 echo "==> Detecting Inno Setup Compiler (ISCC)..."
 ISCC_CMD=""
