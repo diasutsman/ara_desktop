@@ -85,8 +85,8 @@ if (Test-Path $InstallerPath) {
     Compress-Archive -Path $InstallerPath -DestinationPath $ZipPath -Force
     Unblock-File -Path $ZipPath -ErrorAction SilentlyContinue
 
-    $VersionedExePath = Join-Path $ProjectRoot "build\windows\ARA_Assessment_Setup_v1.0.1.exe"
-    $VersionedZipPath = Join-Path $ProjectRoot "build\windows\ARA_Assessment_Setup_v1.0.1.zip"
+    $VersionedExePath = Join-Path $ProjectRoot "build\windows\ARA_Assessment_Setup_v1.0.2.exe"
+    $VersionedZipPath = Join-Path $ProjectRoot "build\windows\ARA_Assessment_Setup_v1.0.2.zip"
     Copy-Item -Path $InstallerPath -Destination $VersionedExePath -Force
     Copy-Item -Path $ZipPath -Destination $VersionedZipPath -Force
     Unblock-File -Path $VersionedExePath -ErrorAction SilentlyContinue

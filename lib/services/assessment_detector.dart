@@ -295,6 +295,69 @@ class AssessmentDetector {
         } catch (_) {}
       }
 
+      // Intercept window.alert() with an in-page DOM modal so the OK button is
+      // always clickable across Windows WebView2 (offscreen texture), macOS, and mobile.
+      if (!window.__araAlertPatched) {
+        window.__araAlertPatched = true;
+        var _nativeAlert = window.alert ? window.alert.bind(window) : null;
+        window.alert = function(msg) {
+          try {
+            var text = (msg === undefined || msg === null) ? '' : String(msg);
+            var existing = document.getElementById('ara-inpage-alert-overlay');
+            if (existing && existing.parentNode) {
+              existing.parentNode.removeChild(existing);
+            }
+            var overlay = document.createElement('div');
+            overlay.id = 'ara-inpage-alert-overlay';
+            overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;';
+
+            var box = document.createElement('div');
+            box.style.cssText = 'background:#ffffff;color:#1f2937;border-radius:12px;box-shadow:0 20px 45px rgba(0,0,0,0.28);max-width:440px;width:90%;padding:22px 24px;box-sizing:border-box;';
+
+            var header = document.createElement('div');
+            header.style.cssText = 'font-size:13px;font-weight:600;color:#6b7280;margin-bottom:8px;';
+            header.textContent = 'ara-assessment.com';
+
+            var body = document.createElement('div');
+            body.style.cssText = 'font-size:15px;line-height:1.5;color:#111827;margin-bottom:20px;white-space:pre-wrap;word-break:break-word;';
+            body.textContent = text;
+
+            var footer = document.createElement('div');
+            footer.style.cssText = 'display:flex;justify-content:flex-end;';
+
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.textContent = 'OK';
+            btn.style.cssText = 'background:#0078d4;color:#ffffff;border:none;border-radius:6px;padding:8px 22px;font-size:14px;font-weight:600;cursor:pointer;outline:none;';
+
+            var closeModal = function() {
+              if (overlay && overlay.parentNode) {
+                overlay.parentNode.removeChild(overlay);
+              }
+              document.removeEventListener('keydown', onKeyDown, true);
+            };
+            var onKeyDown = function(ev) {
+              if (ev.key === 'Enter' || ev.key === 'Escape' || ev.key === ' ') {
+                ev.preventDefault();
+                closeModal();
+              }
+            };
+            btn.addEventListener('click', closeModal);
+            document.addEventListener('keydown', onKeyDown, true);
+
+            footer.appendChild(btn);
+            box.appendChild(header);
+            box.appendChild(body);
+            box.appendChild(footer);
+            overlay.appendChild(box);
+            (document.body || document.documentElement).appendChild(overlay);
+            setTimeout(function() { try { btn.focus(); } catch (_) {} }, 20);
+          } catch (_) {
+            if (_nativeAlert) _nativeAlert(msg);
+          }
+        };
+      }
+
       // Intercept clicks on Office document links or ms-word/ms-excel/ms-powerpoint schemes
       document.addEventListener('click', function(e) {
         try {

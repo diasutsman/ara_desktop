@@ -577,6 +577,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
     try {
       await showDialog<void>(
         context: context,
+        useRootNavigator: true,
         barrierDismissible: false,
         builder: (ctx) => AlertDialog(
           backgroundColor: const Color(0xFF1E1E2E),
@@ -640,6 +641,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
     try {
       final res = await showDialog<bool>(
         context: context,
+        useRootNavigator: true,
         barrierDismissible: false,
         builder: (ctx) => AlertDialog(
           backgroundColor: const Color(0xFF1E1E2E),
@@ -710,6 +712,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
     try {
       submittedValue = await showDialog<String>(
         context: context,
+        useRootNavigator: true,
         barrierDismissible: false,
         builder: (ctx) => AlertDialog(
           backgroundColor: const Color(0xFF1E1E2E),
@@ -765,14 +768,100 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
     CreateWindowAction createWindowAction,
   ) async {
     final targetUrl = createWindowAction.request.url;
-    if (targetUrl == null) return false;
-    final uri = Uri.tryParse(targetUrl.toString());
-    if (uri != null && OfficeDocumentService.isOfficeDocumentUrl(uri)) {
-      unawaited(_openPortalDocument(uri));
-      return false;
+    if (targetUrl != null) {
+      final uri = Uri.tryParse(targetUrl.toString());
+      if (uri != null && OfficeDocumentService.isOfficeDocumentUrl(uri)) {
+        unawaited(_openPortalDocument(uri));
+        return false;
+      }
     }
-    await controller.loadUrl(urlRequest: createWindowAction.request);
-    return false;
+
+    if (!mounted) return false;
+
+    // Open genuine in-app popup window so window.open(), target="_blank", and window.close()
+    // work universally just like a standard desktop/mobile browser.
+    unawaited(
+      showDialog<void>(
+        context: context,
+        useRootNavigator: true,
+        barrierDismissible: true,
+        builder: (ctx) => Dialog(
+          backgroundColor: const Color(0xFF1E1E2E),
+          insetPadding: const EdgeInsets.all(24),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          clipBehavior: Clip.antiAlias,
+          child: SizedBox(
+            width: 960,
+            height: 680,
+            child: Column(
+              children: [
+                Container(
+                  height: 40,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  color: const Color(0xFF2B2B2B),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.open_in_new_rounded, color: Color(0xFF00AEF0), size: 16),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          targetUrl?.toString().isNotEmpty == true
+                              ? targetUrl.toString()
+                              : 'Jendela Portal ARA Assessment',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(color: Colors.white70, fontSize: 12),
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close_rounded, color: Colors.white70, size: 18),
+                        tooltip: 'Tutup Jendela',
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                        onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(),
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: InAppWebView(
+                    windowId: createWindowAction.windowId,
+                    initialUrlRequest: targetUrl != null ? createWindowAction.request : null,
+                    initialSettings: InAppWebViewSettings(
+                      javaScriptEnabled: true,
+                      domStorageEnabled: true,
+                      databaseEnabled: true,
+                      thirdPartyCookiesEnabled: true,
+                      mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
+                      javaScriptCanOpenWindowsAutomatically: true,
+                      supportMultipleWindows: true,
+                      useOnDownloadStart: true,
+                      userAgent: _platformUserAgent,
+                    ),
+                    onJsAlert: _handleJsAlert,
+                    onJsConfirm: _handleJsConfirm,
+                    onJsPrompt: _handleJsPrompt,
+                    onDownloadStartRequest: _handleDownload,
+                    onPermissionRequest: (ctrl, request) async {
+                      return PermissionResponse(
+                        resources: request.resources,
+                        action: PermissionResponseAction.GRANT,
+                      );
+                    },
+                    onCloseWindow: (ctrl) {
+                      if (Navigator.of(ctx, rootNavigator: true).canPop()) {
+                        Navigator.of(ctx, rootNavigator: true).pop();
+                      }
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    return true;
   }
 
   Future<void> _launchOfficeScheme(Uri uri) async {
@@ -1196,6 +1285,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                 allowFileAccess: true,
                 allowContentAccess: true,
                 javaScriptCanOpenWindowsAutomatically: true,
+                supportMultipleWindows: true,
                 cacheEnabled: true,
                 userAgent: _platformUserAgent,
                 // Disable CDP Fetch.requestPaused URL interception on Windows to prevent initial navigation race conditions;
