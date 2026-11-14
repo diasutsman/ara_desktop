@@ -28,6 +28,8 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
   InAppWebViewController? _webViewController;
   WebViewEnvironment? _webViewEnvironment;
   bool _isWebViewEnvReady = false;
+  int _webViewRebuildKey = 0;
+  String? _preferredCameraDeviceId;
   final KioskSecurityService _kioskService = KioskSecurityService();
   final AssessmentDetector _detector = AssessmentDetector();
 
@@ -82,6 +84,174 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
     _startLoadingWatchdog(resetElapsed: true);
   }
 
+  static const String _kWindowsBrowserArgs =
+      '--use-fake-ui-for-media-stream '
+      '--auto-accept-camera-and-microphone-capture '
+      '--ignore-certificate-errors '
+      '--allow-running-insecure-content '
+      '--autoplay-policy=no-user-gesture-required '
+      '--disable-features=msSmartScreenProtection,CalculateNativeWinOcclusion,RendererCodeIntegrity';
+
+  String _buildCameraCompatibilityScript() {
+    final preferredJson = jsonEncode(_preferredCameraDeviceId ?? '');
+    return '''
+(function() {
+  if (window.__araCameraCompatInstalled) {
+    if ($preferredJson) {
+      window.__araPreferredCameraId = $preferredJson;
+      try { localStorage.setItem('__araPreferredCameraId', $preferredJson); } catch (_) {}
+    }
+    return;
+  }
+  window.__araCameraCompatInstalled = true;
+
+  var initialPref = $preferredJson;
+  if (!initialPref) {
+    try { initialPref = localStorage.getItem('__araPreferredCameraId') || ''; } catch (_) {}
+  }
+  window.__araPreferredCameraId = initialPref || '';
+
+  // Ensure Permissions API never reports camera/microphone as pre-denied in WebView
+  if (navigator.permissions && typeof navigator.permissions.query === 'function') {
+    var origPermQuery = navigator.permissions.query.bind(navigator.permissions);
+    navigator.permissions.query = function(desc) {
+      if (desc && (desc.name === 'camera' || desc.name === 'microphone')) {
+        return origPermQuery(desc).then(function(status) {
+          if (status && status.state === 'denied') {
+            return { state: 'prompt', onchange: null, addEventListener: function(){}, removeEventListener: function(){} };
+          }
+          return status;
+        }).catch(function() {
+          return { state: 'granted', onchange: null, addEventListener: function(){}, removeEventListener: function(){} };
+        });
+      }
+      return origPermQuery(desc);
+    };
+  }
+
+  if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
+    return;
+  }
+
+  var origGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+  var virtualRegex = /obs|virtual|manycam|snap camera|vcam|droidcam|iriun|epoccam|xsplit|splitcam|cyberlink|avatar/i;
+
+  function cloneWithDeviceId(constraints, deviceId, relaxVideo) {
+    var next = {};
+    if (constraints && typeof constraints === 'object') {
+      for (var k in constraints) {
+        if (Object.prototype.hasOwnProperty.call(constraints, k)) {
+          next[k] = constraints[k];
+        }
+      }
+    }
+    if (relaxVideo) {
+      next.video = deviceId ? { deviceId: { exact: deviceId } } : true;
+    } else if (deviceId) {
+      var baseVideo = (constraints && typeof constraints.video === 'object') ? constraints.video : {};
+      var merged = {};
+      for (var vk in baseVideo) {
+        if (Object.prototype.hasOwnProperty.call(baseVideo, vk) && vk !== 'facingMode' && vk !== 'deviceId') {
+          merged[vk] = baseVideo[vk];
+        }
+      }
+      merged.deviceId = { exact: deviceId };
+      next.video = merged;
+    }
+    return next;
+  }
+
+  navigator.mediaDevices.getUserMedia = async function(constraints) {
+    var wantsVideo = Boolean(constraints && constraints.video);
+    if (!wantsVideo) {
+      return origGetUserMedia(constraints);
+    }
+
+    var preferredId = window.__araPreferredCameraId || '';
+    if (!preferredId) {
+      try { preferredId = localStorage.getItem('__araPreferredCameraId') || ''; } catch (_) {}
+    }
+
+    // 1. If participant selected a specific camera via Force Kamera, try it first
+    if (preferredId) {
+      try {
+        return await origGetUserMedia(cloneWithDeviceId(constraints, preferredId, false));
+      } catch (_) {
+        try {
+          return await origGetUserMedia(cloneWithDeviceId(constraints, preferredId, true));
+        } catch (_e2) {}
+      }
+    }
+
+    // 2. Standard portal request
+    try {
+      return await origGetUserMedia(constraints);
+    } catch (primaryErr) {
+      console.warn('[ARA Camera Compat] Primary getUserMedia failed, trying fallbacks:', primaryErr && primaryErr.name, primaryErr && primaryErr.message);
+
+      // 3. Relax strict resolution / facingMode constraints (fixes OverconstrainedError on 480p webcams)
+      try {
+        return await origGetUserMedia(cloneWithDeviceId(constraints, '', true));
+      } catch (_) {}
+
+      // 4. Enumerate all videoinput devices and try physical hardware cameras before virtual cameras
+      if (typeof navigator.mediaDevices.enumerateDevices === 'function') {
+        try {
+          var devices = await navigator.mediaDevices.enumerateDevices();
+          var cams = devices.filter(function(d) { return d && d.kind === 'videoinput' && d.deviceId; });
+          cams.sort(function(a, b) {
+            var aVirt = virtualRegex.test(a.label || '') ? 1 : 0;
+            var bVirt = virtualRegex.test(b.label || '') ? 1 : 0;
+            return aVirt - bVirt;
+          });
+          for (var i = 0; i < cams.length; i++) {
+            try {
+              var stream = await origGetUserMedia(cloneWithDeviceId(constraints, cams[i].deviceId, true));
+              window.__araPreferredCameraId = cams[i].deviceId;
+              return stream;
+            } catch (_) {}
+          }
+        } catch (_) {}
+      }
+
+      throw primaryErr;
+    }
+  };
+})();
+''';
+  }
+
+  Future<void> _ensureWebView2RuntimeInstalled() async {
+    if (!_isWindows) return;
+    try {
+      final version = await WebViewEnvironment.getAvailableVersion();
+      if (version != null && version.trim().isNotEmpty) {
+        debugPrint('[WebViewScreen] Detected WebView2 Runtime version: $version');
+        return;
+      }
+    } catch (e) {
+      debugPrint('[WebViewScreen] getAvailableVersion check error: $e');
+    }
+
+    // Auto-install bundled WebView2 evergreen bootstrapper if missing on participant laptop
+    try {
+      final exeDir = File(Platform.resolvedExecutable).parent.path;
+      final setupCandidates = [
+        '$exeDir\\MicrosoftEdgeWebView2Setup.exe',
+        '${Directory.current.path}\\windows\\redist\\MicrosoftEdgeWebView2Setup.exe',
+      ];
+      for (final setupPath in setupCandidates) {
+        if (await File(setupPath).exists()) {
+          debugPrint('[WebViewScreen] WebView2 missing; running silent bootstrapper: $setupPath');
+          await Process.run(setupPath, ['/silent', '/install']).timeout(const Duration(seconds: 45));
+          break;
+        }
+      }
+    } catch (e) {
+      debugPrint('[WebViewScreen] WebView2 bootstrapper auto-install error: $e');
+    }
+  }
+
   Future<void> _initWindowsWebViewEnvironment() async {
     if (!_isWindows) {
       if (mounted) {
@@ -92,22 +262,30 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
       return;
     }
 
-    try {
-      final localAppData = Platform.environment['LOCALAPPDATA'] ?? Directory.systemTemp.path;
-      final userDataFolder = '$localAppData\\ARA Assessment\\WebView2';
-      await Directory(userDataFolder).create(recursive: true);
+    // Proactively ensure OS-level Windows webcam & mic permissions are Allow on every app launch
+    unawaited(_kioskService.forceWindowsCameraAccess());
 
-      _webViewEnvironment = await WebViewEnvironment.create(
-        settings: WebViewEnvironmentSettings(
-          userDataFolder: userDataFolder,
-          additionalBrowserArguments:
-              '--ignore-certificate-errors --allow-running-insecure-content --autoplay-policy=no-user-gesture-required --disable-features=msSmartScreenProtection,CalculateNativeWinOcclusion',
-        ),
-      ).timeout(const Duration(seconds: 5));
-      debugPrint('[WebViewScreen] WebViewEnvironment created at: $userDataFolder');
-    } catch (e) {
-      debugPrint('[WebViewScreen] WebViewEnvironment fallback to default ($e)');
-      _webViewEnvironment = null;
+    await _ensureWebView2RuntimeInstalled();
+
+    final localAppData = Platform.environment['LOCALAPPDATA'] ?? Directory.systemTemp.path;
+    final primaryFolder = '$localAppData\\ARA Assessment\\WebView2_v2';
+    final fallbackFolder = '$localAppData\\ARA Assessment\\WebView2_Session_$pid';
+
+    for (final folder in [primaryFolder, fallbackFolder]) {
+      try {
+        await Directory(folder).create(recursive: true);
+        _webViewEnvironment = await WebViewEnvironment.create(
+          settings: WebViewEnvironmentSettings(
+            userDataFolder: folder,
+            additionalBrowserArguments: _kWindowsBrowserArgs,
+          ),
+        ).timeout(const Duration(seconds: 25));
+        debugPrint('[WebViewScreen] WebViewEnvironment created at: $folder');
+        break;
+      } catch (e) {
+        debugPrint('[WebViewScreen] WebViewEnvironment failed at $folder ($e)');
+        _webViewEnvironment = null;
+      }
     }
 
     if (mounted) {
@@ -199,11 +377,24 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
 
         final controller = _webViewController;
         if (controller == null) {
-          if (_loadingElapsedSeconds >= 8) {
+          // If native WebView failed to attach within 12s on a slow laptop, rebuild it once automatically
+          if (_loadingElapsedSeconds == 12 && _autoRetryCount < 1) {
+            _autoRetryCount++;
+            debugPrint('[WebViewScreen] WebViewController still null at 12s; triggering automatic WebView rebuild...');
+            setState(() {
+              _webViewRebuildKey++;
+            });
+            return;
+          }
+          // Never drop to a blank #2B2B2B screen; if still null after 28s, show actionable recovery overlay
+          if (_loadingElapsedSeconds >= 28) {
             timer.cancel();
             setState(() {
               _isLoading = false;
-              _loadProgress = 1.0;
+              _hasError = true;
+              _errorMessage =
+                  'Komponen tampilan WebView membutuhkan waktu lebih lama untuk dimuat di perangkat ini. '
+                  'Silakan klik "Coba Lagi" atau tombol "Refresh" di pojok kiri atas.';
             });
           }
           return;
@@ -225,17 +416,29 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
               _handleDomReady(currentUrlStr);
               return;
             }
+          } else if (_loadingElapsedSeconds == 8) {
+            final targetUrl = _activeTargetUrl;
+            debugPrint('[WebViewScreen] Watchdog noticed empty/about:blank at 8s; forcing loadUrl($targetUrl)');
+            unawaited(controller.loadUrl(urlRequest: URLRequest(url: WebUri(targetUrl))));
           }
         } catch (e) {
           debugPrint('[WebViewScreen] Watchdog poll error: $e');
         }
 
-        // Safety ceiling: dismiss overlay after 6 seconds so user is NEVER stuck behind "Memuat portal asesmen..."
-        if (_loadingElapsedSeconds >= 6) {
+        // Only dismiss overlay automatically if a page has already loaded; otherwise wait up to 25s
+        if (_hasLoadedSuccessfully && _loadingElapsedSeconds >= 6) {
           timer.cancel();
           setState(() {
             _isLoading = false;
             _loadProgress = 1.0;
+          });
+        } else if (!_hasLoadedSuccessfully && _loadingElapsedSeconds >= 25) {
+          timer.cancel();
+          setState(() {
+            _isLoading = false;
+            _hasError = true;
+            _errorMessage =
+                'Waktu pemuatan halaman habis. Pastikan koneksi internet Anda stabil lalu klik "Coba Lagi".';
           });
         }
       });
@@ -320,7 +523,18 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
     _startLoadingWatchdog(resetElapsed: true);
 
     final controller = _webViewController;
-    if (controller == null) return;
+    if (controller == null) {
+      debugPrint('[WebViewScreen] Controller is null during reload; rebuilding InAppWebView instance...');
+      if (_isWindows && _webViewEnvironment == null) {
+        await _initWindowsWebViewEnvironment();
+      }
+      if (mounted) {
+        setState(() {
+          _webViewRebuildKey++;
+        });
+      }
+      return;
+    }
 
     final fallbackUrl = _activeTargetUrl;
     try {
@@ -827,8 +1041,16 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                   child: InAppWebView(
                     windowId: createWindowAction.windowId,
                     initialUrlRequest: targetUrl != null ? createWindowAction.request : null,
+                    initialUserScripts: UnmodifiableListView<UserScript>([
+                      UserScript(
+                        source: _buildCameraCompatibilityScript(),
+                        injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+                      ),
+                    ]),
                     initialSettings: InAppWebViewSettings(
                       javaScriptEnabled: true,
+                      allowsInlineMediaPlayback: true,
+                      mediaPlaybackRequiresUserGesture: false,
                       domStorageEnabled: true,
                       databaseEnabled: true,
                       thirdPartyCookiesEnabled: true,
@@ -1259,11 +1481,16 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
             // Main Webview
             if (!_isWindows || _isWebViewEnvReady)
               InAppWebView(
+                key: ValueKey<String>('ara_main_webview_$_webViewRebuildKey'),
                 webViewEnvironment: _webViewEnvironment,
                 initialUrlRequest: URLRequest(
                   url: WebUri(_activeTargetUrl),
                 ),
               initialUserScripts: UnmodifiableListView<UserScript>([
+                UserScript(
+                  source: _buildCameraCompatibilityScript(),
+                  injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+                ),
                 UserScript(
                   source: AssessmentDetector.injectedScript,
                   injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
@@ -1302,7 +1529,13 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                   _webViewController = controller;
                   _detector.registerJsHandlers(controller);
 
-                  // Ensure detection script is also registered dynamically
+                  // Ensure camera compatibility & detection scripts are also registered dynamically
+                  controller.addUserScript(
+                    userScript: UserScript(
+                      source: _buildCameraCompatibilityScript(),
+                      injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+                    ),
+                  );
                   controller.addUserScript(
                     userScript: UserScript(
                       source: AssessmentDetector.injectedScript,
@@ -1848,6 +2081,17 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
             constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
             onPressed: _handleRefresh,
           ),
+          const SizedBox(width: 2),
+
+          // Force Camera Button (Mobile)
+          IconButton(
+            icon: const Icon(Icons.videocam_rounded, color: Color(0xFF00E5FF), size: 20),
+            tooltip: 'Force Kamera & Perbaikan Izin',
+            visualDensity: VisualDensity.compact,
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+            onPressed: _handleForceCamera,
+          ),
           const SizedBox(width: 6),
 
           // Utilities Dropdown Menu
@@ -1910,6 +2154,11 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
 
           // Refresh Button
           _buildDesktopRefreshButton(),
+
+          const SizedBox(width: 4),
+
+          // Force Camera Button (top-left right next to Refresh)
+          _buildDesktopForceCameraButton(),
 
           // Dev Mode Controls
           if (_kioskService.isDevMode) _buildDesktopDevControls(),
@@ -2072,6 +2321,476 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildDesktopForceCameraButton() {
+    return _DesktopHoverButton(
+      tooltip: 'Force Kamera: Paksa aktifkan izin kamera Windows/WebView & pilih webcam',
+      onTap: _handleForceCamera,
+      child: const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.videocam_rounded, size: 14, color: Color(0xFF00E5FF)),
+          SizedBox(width: 4),
+          Text(
+            'Force Kamera',
+            style: TextStyle(
+              color: Color(0xFF00E5FF),
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.2,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<Map<String, dynamic>> _runCameraDiagnostics({bool elevateIfBlocked = false}) async {
+    Map<String, dynamic> osStatus = {'hkcuAllowed': true, 'hklmBlocked': false, 'subkeysUpdated': 0};
+    if (_isWindows) {
+      osStatus = await _kioskService.forceWindowsCameraAccess(elevateIfBlocked: elevateIfBlocked);
+    } else if (_isMobile) {
+      await _requestInitialPermissions();
+    }
+
+    final controller = _webViewController;
+    List<Map<String, String>> cameras = [];
+    bool streamOk = false;
+    String errorName = '';
+    String errorMessage = '';
+    String activeCameraLabel = '';
+
+    if (controller != null) {
+      try {
+        await controller.evaluateJavascript(source: _buildCameraCompatibilityScript());
+        final result = await controller.callAsyncJavaScript(
+          functionBody: '''
+            try {
+              if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
+                return JSON.stringify({
+                  streamOk: false,
+                  errorName: 'UnsupportedContext',
+                  errorMessage: 'navigator.mediaDevices tidak tersedia pada halaman ini.',
+                  activeCameraLabel: '',
+                  cameras: []
+                });
+              }
+              var stream = null;
+              var errName = '';
+              var errMsg = '';
+              var activeLabel = '';
+              try {
+                var pref = window.__araPreferredCameraId || '';
+                var c = pref ? { video: { deviceId: { exact: pref } }, audio: false } : { video: true, audio: false };
+                stream = await navigator.mediaDevices.getUserMedia(c);
+                var tracks = stream.getVideoTracks();
+                if (tracks && tracks.length > 0) {
+                  activeLabel = tracks[0].label || 'Kamera Aktif';
+                }
+              } catch (err) {
+                errName = (err && err.name) ? String(err.name) : 'CameraError';
+                errMsg = (err && err.message) ? String(err.message) : String(err);
+              } finally {
+                if (stream) {
+                  stream.getTracks().forEach(function(t) { try { t.stop(); } catch (_) {} });
+                }
+              }
+
+              var camList = [];
+              if (typeof navigator.mediaDevices.enumerateDevices === 'function') {
+                var all = await navigator.mediaDevices.enumerateDevices();
+                var idx = 1;
+                for (var i = 0; i < all.length; i++) {
+                  if (all[i] && all[i].kind === 'videoinput') {
+                    camList.push({
+                      deviceId: all[i].deviceId || '',
+                      label: all[i].label || ('Kamera ' + idx)
+                    });
+                    idx++;
+                  }
+                }
+              }
+
+              return JSON.stringify({
+                streamOk: errName === '',
+                errorName: errName,
+                errorMessage: errMsg,
+                activeCameraLabel: activeLabel,
+                cameras: camList
+              });
+            } catch (outerErr) {
+              return JSON.stringify({
+                streamOk: false,
+                errorName: 'ProbeException',
+                errorMessage: String(outerErr),
+                activeCameraLabel: '',
+                cameras: []
+              });
+            }
+          ''',
+        );
+
+        final rawJson = result?.value?.toString() ?? '';
+        if (rawJson.isNotEmpty) {
+          final parsed = jsonDecode(rawJson) as Map<String, dynamic>;
+          streamOk = parsed['streamOk'] == true;
+          errorName = (parsed['errorName'] ?? '').toString();
+          errorMessage = (parsed['errorMessage'] ?? '').toString();
+          activeCameraLabel = (parsed['activeCameraLabel'] ?? '').toString();
+          final rawCams = parsed['cameras'];
+          if (rawCams is List) {
+            cameras = rawCams
+                .whereType<Map>()
+                .map((m) => {
+                      'deviceId': (m['deviceId'] ?? '').toString(),
+                      'label': (m['label'] ?? 'Kamera').toString(),
+                    })
+                .toList();
+          }
+        }
+      } catch (e) {
+        errorName = 'WebViewBridgeError';
+        errorMessage = e.toString();
+      }
+    } else {
+      errorName = 'WebViewNotReady';
+      errorMessage = 'Halaman belum selesai dimuat. Klik "Paksa Aktifkan & Muat Ulang".';
+    }
+
+    return {
+      ...osStatus,
+      'streamOk': streamOk,
+      'errorName': errorName,
+      'errorMessage': errorMessage,
+      'activeCameraLabel': activeCameraLabel,
+      'cameras': cameras,
+    };
+  }
+
+  String _explainCameraError(String errorName, String errorMessage, bool hklmBlocked) {
+    if (hklmBlocked) {
+      return 'Izin kamera diblokir di level Sistem Windows (HKLM / Administrator). Klik tombol "Buka Kunci Sistem (Admin)" atau aktifkan lewat "Pengaturan Kamera Windows".';
+    }
+    final lower = '$errorName $errorMessage'.toLowerCase();
+    if (lower.contains('notreadable') || lower.contains('trackstarterror') || lower.contains('in use')) {
+      return 'Kamera sedang dipakai aplikasi lain (Zoom, Teams, WhatsApp, OBS, atau tab browser lain), atau pilih kamera fisik lain di daftar bawah.';
+    }
+    if (lower.contains('notfound') || lower.contains('devicesnotfound')) {
+      return 'Perangkat kamera tidak terdeteksi oleh Windows. Pastikan webcam terpasang atau tombol fisik/Fn kamera pada keyboard laptop tidak dalam posisi OFF.';
+    }
+    if (lower.contains('notallowed') || lower.contains('permissiondenied')) {
+      return 'Izin kamera sempat tertahan. Kami sudah memaksa izin menjadi ALLOW—klik "Paksa Aktifkan & Muat Ulang" di bawah untuk menerapkan langsung.';
+    }
+    if (errorMessage.isNotEmpty) {
+      return '$errorName: $errorMessage';
+    }
+    return 'Klik "Paksa Aktifkan & Muat Ulang" untuk memuat ulang akses kamera pada halaman ini.';
+  }
+
+  Future<void> _applyForcedCameraAndReload(String? selectedDeviceId) async {
+    _preferredCameraDeviceId = (selectedDeviceId != null && selectedDeviceId.isNotEmpty) ? selectedDeviceId : null;
+    if (_isWindows) {
+      await _kioskService.forceWindowsCameraAccess();
+    }
+    final controller = _webViewController;
+    if (controller != null) {
+      final prefValue = _preferredCameraDeviceId ?? '';
+      try {
+        await controller.evaluateJavascript(
+          source: '''
+            window.__araPreferredCameraId = ${jsonEncode(prefValue)};
+            try {
+              if (${jsonEncode(prefValue)}) {
+                localStorage.setItem('__araPreferredCameraId', ${jsonEncode(prefValue)});
+              } else {
+                localStorage.removeItem('__araPreferredCameraId');
+              }
+            } catch (_) {}
+          ''',
+        );
+        await controller.evaluateJavascript(source: _buildCameraCompatibilityScript());
+      } catch (e) {
+        debugPrint('[WebViewScreen] Error injecting preferred camera id: $e');
+      }
+    }
+    await _reloadOrLoadTargetUrl();
+    if (mounted) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: const Row(
+              children: [
+                Icon(Icons.videocam_rounded, color: Colors.white, size: 18),
+                SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Izin kamera berhasil dipaksa AKTIF & halaman sedang dimuat ulang.',
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ],
+            ),
+            backgroundColor: Colors.teal.shade800,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+    }
+  }
+
+  Future<void> _handleForceCamera() async {
+    if (!mounted) return;
+
+    Map<String, dynamic> diag = await _runCameraDiagnostics();
+    if (!mounted) return;
+
+    String selectedCamId = _preferredCameraDeviceId ?? '';
+    bool isChecking = false;
+
+    await showDialog<void>(
+      context: context,
+      useRootNavigator: true,
+      barrierDismissible: true,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) {
+            final bool streamOk = diag['streamOk'] == true;
+            final bool hklmBlocked = diag['hklmBlocked'] == true;
+            final String errorName = (diag['errorName'] ?? '').toString();
+            final String errorMessage = (diag['errorMessage'] ?? '').toString();
+            final String activeCameraLabel = (diag['activeCameraLabel'] ?? '').toString();
+            final List<Map<String, String>> cameras =
+                (diag['cameras'] as List?)?.cast<Map<String, String>>() ?? const [];
+
+            return AlertDialog(
+              backgroundColor: const Color(0xFF1E1E2E),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+                side: const BorderSide(color: Color(0xFF3A3A52), width: 1),
+              ),
+              title: const Row(
+                children: [
+                  Icon(Icons.videocam_rounded, color: Color(0xFF00E5FF), size: 22),
+                  SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Force Kamera & Perbaikan Izin',
+                      style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                ],
+              ),
+              content: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 480),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: streamOk
+                              ? Colors.green.shade900.withValues(alpha: 0.35)
+                              : Colors.orange.shade900.withValues(alpha: 0.35),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: streamOk ? Colors.greenAccent : Colors.orangeAccent,
+                            width: 1,
+                          ),
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Icon(
+                              streamOk ? Icons.check_circle_rounded : Icons.warning_amber_rounded,
+                              color: streamOk ? Colors.greenAccent : Colors.orangeAccent,
+                              size: 20,
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    streamOk
+                                        ? 'Kamera Siap Digunakan!'
+                                        : 'Perlu Pemaksaan / Penyesuaian Kamera',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    streamOk
+                                        ? 'Izin kamera Windows & WebView sudah ALLOW${activeCameraLabel.isNotEmpty ? " ($activeCameraLabel)" : ""}. Klik "Paksa Aktifkan & Muat Ulang" jika tampilan kamera di halaman belum muncul.'
+                                        : _explainCameraError(errorName, errorMessage, hklmBlocked),
+                                    style: const TextStyle(color: Colors.white70, fontSize: 12, height: 1.4),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      if (_isWindows && hklmBlocked) ...[
+                        const SizedBox(height: 12),
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton.icon(
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: Colors.amberAccent,
+                              side: const BorderSide(color: Colors.amberAccent),
+                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                            ),
+                            onPressed: isChecking
+                                ? null
+                                : () async {
+                                    setDialogState(() => isChecking = true);
+                                    final nextDiag = await _runCameraDiagnostics(elevateIfBlocked: true);
+                                    if (ctx.mounted) {
+                                      setDialogState(() {
+                                        diag = nextDiag;
+                                        isChecking = false;
+                                      });
+                                    }
+                                  },
+                            icon: const Icon(Icons.admin_panel_settings_rounded, size: 18),
+                            label: const Text(
+                              'Buka Kunci Kamera Sistem Windows (Admin / UAC)',
+                              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                            ),
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 14),
+                      const Text(
+                        'Pilih Perangkat Kamera:',
+                        style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 6),
+                      RadioGroup<String>(
+                        groupValue: selectedCamId,
+                        onChanged: (val) {
+                          setDialogState(() => selectedCamId = val ?? '');
+                        },
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            RadioListTile<String>(
+                              dense: true,
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 6),
+                              value: '',
+                              activeColor: const Color(0xFF00E5FF),
+                              title: const Text(
+                                'Otomatis (Prioritaskan Kamera Fisik Laptop / USB)',
+                                style: TextStyle(color: Colors.white, fontSize: 12.5),
+                              ),
+                            ),
+                            ...cameras
+                                .where((c) => (c['deviceId'] ?? '').isNotEmpty)
+                                .map(
+                                  (cam) => RadioListTile<String>(
+                                    dense: true,
+                                    contentPadding: const EdgeInsets.symmetric(horizontal: 6),
+                                    value: cam['deviceId']!,
+                                    activeColor: const Color(0xFF00E5FF),
+                                    title: Text(
+                                      cam['label'] ?? 'Kamera',
+                                      style: const TextStyle(color: Colors.white, fontSize: 12.5),
+                                    ),
+                                  ),
+                                ),
+                          ],
+                        ),
+                      ),
+                      if (cameras.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.only(top: 4, left: 6),
+                          child: Text(
+                            'Belum ada perangkat video yang terbaca oleh browser.',
+                            style: TextStyle(color: Colors.white54, fontSize: 11.5),
+                          ),
+                        ),
+                      if (_isWindows) ...[
+                        const SizedBox(height: 10),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: TextButton.icon(
+                            onPressed: () {
+                              unawaited(_kioskService.openWindowsCameraPrivacySettings());
+                            },
+                            icon: const Icon(Icons.settings_rounded, size: 16, color: Colors.white70),
+                            label: const Text(
+                              'Buka Pengaturan Privasi Kamera Windows',
+                              style: TextStyle(color: Colors.white70, fontSize: 12),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(),
+                  child: const Text('Tutup', style: TextStyle(color: Colors.white60)),
+                ),
+                OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white,
+                    side: const BorderSide(color: Colors.white24),
+                  ),
+                  onPressed: isChecking
+                      ? null
+                      : () async {
+                          setDialogState(() => isChecking = true);
+                          _preferredCameraDeviceId = selectedCamId.isNotEmpty ? selectedCamId : null;
+                          final nextDiag = await _runCameraDiagnostics();
+                          if (ctx.mounted) {
+                            setDialogState(() {
+                              diag = nextDiag;
+                              isChecking = false;
+                            });
+                          }
+                        },
+                  icon: isChecking
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                        )
+                      : const Icon(Icons.sync_rounded, size: 16),
+                  label: const Text('Tes Ulang', style: TextStyle(fontSize: 12)),
+                ),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF00AEF0),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  onPressed: () {
+                    Navigator.of(ctx).pop();
+                    unawaited(_applyForcedCameraAndReload(selectedCamId));
+                  },
+                  icon: const Icon(Icons.bolt_rounded, size: 17),
+                  label: const Text(
+                    'Paksa Aktifkan & Muat Ulang',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
   }
 

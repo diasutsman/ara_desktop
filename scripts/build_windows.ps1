@@ -31,7 +31,6 @@ if (Test-Path ".env") {
 }
 
 Write-Host "==> Running Flutter build windows (release)..." -ForegroundColor Yellow
-Remove-Item -Force "windows\flutter\ephemeral\flutter_windows.dll*" -ErrorAction SilentlyContinue
 Remove-Item -Force "build\windows\x64\runner\Debug\flutter_windows.dll" -ErrorAction SilentlyContinue
 & fvm flutter build windows --release
 if ($LASTEXITCODE -ne 0) {
@@ -85,8 +84,9 @@ if (Test-Path $InstallerPath) {
     Compress-Archive -Path $InstallerPath -DestinationPath $ZipPath -Force
     Unblock-File -Path $ZipPath -ErrorAction SilentlyContinue
 
-    $VersionedExePath = Join-Path $ProjectRoot "build\windows\ARA_Assessment_Setup_v1.0.4.exe"
-    $VersionedZipPath = Join-Path $ProjectRoot "build\windows\ARA_Assessment_Setup_v1.0.4.zip"
+    $SemVer = ($Version -split '\+')[0]
+    $VersionedExePath = Join-Path $ProjectRoot "build\windows\ARA_Assessment_Setup_v$SemVer.exe"
+    $VersionedZipPath = Join-Path $ProjectRoot "build\windows\ARA_Assessment_Setup_v$SemVer.zip"
     Copy-Item -Path $InstallerPath -Destination $VersionedExePath -Force
     Copy-Item -Path $ZipPath -Destination $VersionedZipPath -Force
     Unblock-File -Path $VersionedExePath -ErrorAction SilentlyContinue

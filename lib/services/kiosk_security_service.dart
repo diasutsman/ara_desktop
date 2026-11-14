@@ -328,7 +328,11 @@ class KioskSecurityService with WindowListener {
     'wpp.exe',
     'soffice.exe',
     'soffice.bin',
-    // Essential Windows OS components
+    // Essential Windows OS & WebView2 components (file picker, camera/media host, UAC)
+    'msedgewebview2.exe',
+    'pickerhost.exe',
+    'credentialuibroker.exe',
+    'consent.exe',
     'explorer.exe',
     'dwm.exe',
     'taskhostw.exe',
@@ -338,6 +342,43 @@ class KioskSecurityService with WindowListener {
     'startmenuexperiencehost.exe',
     'ctfmon.exe',
   };
+
+  DateTime? _cameraSettingsAllowedUntil;
+
+  void allowTemporaryCameraSettingsWindow({Duration duration = const Duration(seconds: 90)}) {
+    _cameraSettingsAllowedUntil = DateTime.now().add(duration);
+  }
+
+  Future<Map<String, dynamic>> forceWindowsCameraAccess({bool elevateIfBlocked = false}) async {
+    if (kIsWeb || !Platform.isWindows) {
+      return const {'hkcuAllowed': true, 'hklmBlocked': false, 'subkeysUpdated': 0};
+    }
+    try {
+      if (elevateIfBlocked) {
+        allowTemporaryCameraSettingsWindow(duration: const Duration(seconds: 45));
+      }
+      final raw = await _kioskHookChannel.invokeMethod<dynamic>(
+        'forceCameraAccess',
+        {'elevateIfBlocked': elevateIfBlocked},
+      );
+      if (raw is Map) {
+        return raw.map((k, v) => MapEntry(k.toString(), v));
+      }
+    } catch (e) {
+      debugPrint('[KioskSecurityService] Error invoking forceCameraAccess: $e');
+    }
+    return const {'hkcuAllowed': false, 'hklmBlocked': false, 'subkeysUpdated': 0};
+  }
+
+  Future<void> openWindowsCameraPrivacySettings() async {
+    if (kIsWeb || !Platform.isWindows) return;
+    allowTemporaryCameraSettingsWindow(duration: const Duration(seconds: 90));
+    try {
+      await _kioskHookChannel.invokeMethod<dynamic>('openWindowsCameraSettings');
+    } catch (e) {
+      debugPrint('[KioskSecurityService] Error opening Windows camera settings: $e');
+    }
+  }
 
   // Legitimate Windows OS Shell classes that may be active during desktop/taskbar interaction
   static final Set<String> allowedShellClasses = {
@@ -819,6 +860,12 @@ class KioskSecurityService with WindowListener {
       final isWhitelisted = _essayWhitelist.contains(lowerExe);
       if (isWhitelisted) {
         return const SecurityPolicyEvaluation(WindowAction.allow, 'Exam whitelist');
+      }
+
+      if (_cameraSettingsAllowedUntil != null &&
+          DateTime.now().isBefore(_cameraSettingsAllowedUntil!) &&
+          (lowerExe == 'systemsettings.exe' || lowerExe == 'applicationframehost.exe')) {
+        return const SecurityPolicyEvaluation(WindowAction.allow, 'Temporary camera privacy settings');
       }
 
       return SecurityPolicyEvaluation(

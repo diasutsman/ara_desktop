@@ -4,7 +4,7 @@
 ; 2. Open this file in Inno Setup or run via scripts/build_windows.sh or scripts/build_windows.ps1
 
 #ifndef MyAppVersion
-#define MyAppVersion "1.0.4+5"
+#define MyAppVersion "1.0.5+6"
 #endif
 
 #define MyAppName "ARA Assessment"
@@ -24,19 +24,20 @@ AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
 AppCopyright=Copyright (C) 2026 {#MyAppPublisher}. All rights reserved.
-VersionInfoVersion=1.0.4.5
+VersionInfoVersion=1.0.5.6
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription={#MyAppName} Desktop Installer
 VersionInfoTextVersion={#MyAppVersion}
 VersionInfoCopyright=Copyright (C) 2026 {#MyAppPublisher}. All rights reserved.
 VersionInfoProductName={#MyAppName}
-VersionInfoProductVersion=1.0.4.5
+VersionInfoProductVersion=1.0.5.6
 VersionInfoProductTextVersion={#MyAppVersion}
 MinVersion=6.1sp1
 UninstallDisplayName={#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExeName}
 SetupIconFile=windows\runner\resources\app_icon.ico
 DefaultDirName={localappdata}\Programs\{#MyAppName}
+DisableDirPage=auto
 DisableProgramGroupPage=yes
 ; Non-administrative install mode (install for current user only, no admin/UAC required)
 PrivilegesRequired=lowest
@@ -53,7 +54,7 @@ CloseApplications=force
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
 Source: "build\windows\x64\runner\Release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
@@ -75,15 +76,40 @@ var
   ShouldDeleteData: Boolean;
   ForceCameraButton: TNewButton;
 
+procedure ForceAllowNonPackagedSubkeys(const BaseKey: string);
+var
+  SubKeys: TArrayOfString;
+  I: Integer;
+begin
+  if RegGetSubkeyNames(HKCU, BaseKey, SubKeys) then
+  begin
+    for I := 0 to GetArrayLength(SubKeys) - 1 do
+    begin
+      RegWriteStringValue(HKCU, BaseKey + '\' + SubKeys[I], 'Value', 'Allow');
+    end;
+  end;
+end;
+
 procedure ForceAllowCameraAndMic();
 var
   PrefPath: string;
+  EncodedExePath: string;
 begin
   // Ensure Windows 10/11 Desktop (NonPackaged) apps are allowed to access Camera & Microphone
   RegWriteStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam', 'Value', 'Allow');
   RegWriteStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam\NonPackaged', 'Value', 'Allow');
   RegWriteStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone', 'Value', 'Allow');
   RegWriteStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone\NonPackaged', 'Value', 'Allow');
+
+  // Also force Allow on every existing per-executable NonPackaged subkey (e.g. WebView2 / previous installs)
+  ForceAllowNonPackagedSubkeys('Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam\NonPackaged');
+  ForceAllowNonPackagedSubkeys('Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone\NonPackaged');
+
+  // Explicitly pre-authorize installed ara_desktop.exe path (encoded with '#' per Windows ConsentStore convention)
+  EncodedExePath := ExpandConstant('{app}\{#MyAppExeName}');
+  StringChangeEx(EncodedExePath, '\', '#', True);
+  RegWriteStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam\NonPackaged\' + EncodedExePath, 'Value', 'Allow');
+  RegWriteStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone\NonPackaged\' + EncodedExePath, 'Value', 'Allow');
 
   // Clear any stale WebView2 site permission cache so camera/mic is never stuck on Deny
   PrefPath := ExpandConstant('{localappdata}\ara_desktop\EBWebView\Default\Preferences');
@@ -93,6 +119,10 @@ begin
   PrefPath := ExpandConstant('{localappdata}\com.ara.assessment\EBWebView\Default\Preferences');
   if FileExists(PrefPath) then DeleteFile(PrefPath);
   PrefPath := ExpandConstant('{localappdata}\ARA Assessment\EBWebView\Default\Preferences');
+  if FileExists(PrefPath) then DeleteFile(PrefPath);
+  PrefPath := ExpandConstant('{localappdata}\ARA Assessment\WebView2\EBWebView\Default\Preferences');
+  if FileExists(PrefPath) then DeleteFile(PrefPath);
+  PrefPath := ExpandConstant('{localappdata}\ARA Assessment\WebView2_v2\EBWebView\Default\Preferences');
   if FileExists(PrefPath) then DeleteFile(PrefPath);
 end;
 

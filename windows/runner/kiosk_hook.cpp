@@ -1,6 +1,7 @@
 #include "kiosk_hook.h"
 
 #include <windows.h>
+#include <shellapi.h>
 #include <dwmapi.h>
 #include <uxtheme.h>
 #include <vsstyle.h>
@@ -9,11 +10,16 @@
 #include <flutter/method_channel.h>
 #include <flutter/standard_method_codec.h>
 
+#include <algorithm>
 #include <memory>
 #include <iostream>
+#include <string>
+#include <vector>
 
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "uxtheme.lib")
+#pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "shell32.lib")
 
 namespace {
 
@@ -522,6 +528,174 @@ void ForceWindowToForeground(HWND hwnd) {
   std::cout << "[KioskHook] ForceWindowToForeground executed successfully for HWND: " << hwnd << std::endl;
 }
 
+namespace {
+
+bool WriteRegAllowString(HKEY root, const std::wstring& subKey) {
+  HKEY hKey = nullptr;
+  DWORD disposition = 0;
+  LONG res = ::RegCreateKeyExW(
+      root,
+      subKey.c_str(),
+      0,
+      nullptr,
+      REG_OPTION_NON_VOLATILE,
+      KEY_READ | KEY_WRITE,
+      nullptr,
+      &hKey,
+      &disposition);
+  if (res != ERROR_SUCCESS || hKey == nullptr) {
+    return false;
+  }
+  const wchar_t kAllow[] = L"Allow";
+  LONG setRes = ::RegSetValueExW(
+      hKey,
+      L"Value",
+      0,
+      REG_SZ,
+      reinterpret_cast<const BYTE*>(kAllow),
+      static_cast<DWORD>(sizeof(kAllow)));
+  ::RegCloseKey(hKey);
+  return setRes == ERROR_SUCCESS;
+}
+
+int ForceAllowAllNonPackagedSubkeys(const std::wstring& nonPackagedKeyPath) {
+  int updated = 0;
+  HKEY hKey = nullptr;
+  if (::RegOpenKeyExW(HKEY_CURRENT_USER, nonPackagedKeyPath.c_str(), 0, KEY_READ | KEY_WRITE, &hKey) != ERROR_SUCCESS || hKey == nullptr) {
+    return 0;
+  }
+
+  std::vector<std::wstring> childNames;
+  DWORD index = 0;
+  wchar_t subKeyName[1024];
+  for (;;) {
+    DWORD nameLen = static_cast<DWORD>(std::size(subKeyName));
+    LONG enumRes = ::RegEnumKeyExW(hKey, index, subKeyName, &nameLen, nullptr, nullptr, nullptr, nullptr);
+    if (enumRes == ERROR_NO_MORE_ITEMS) {
+      break;
+    }
+    if (enumRes == ERROR_SUCCESS && nameLen > 0) {
+      childNames.emplace_back(subKeyName, nameLen);
+    }
+    ++index;
+  }
+  ::RegCloseKey(hKey);
+
+  for (const auto& child : childNames) {
+    if (WriteRegAllowString(HKEY_CURRENT_USER, nonPackagedKeyPath + L"\\" + child)) {
+      ++updated;
+    }
+  }
+  return updated;
+}
+
+bool IsMachineWideCameraBlocked() {
+  // 1. Check HKLM ConsentStore\webcam -> Value == "Deny"
+  HKEY hKey = nullptr;
+  if (::RegOpenKeyExW(
+          HKEY_LOCAL_MACHINE,
+          L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\webcam",
+          0,
+          KEY_READ,
+          &hKey) == ERROR_SUCCESS && hKey != nullptr) {
+    wchar_t buf[64] = {0};
+    DWORD bufBytes = sizeof(buf);
+    DWORD type = 0;
+    if (::RegQueryValueExW(hKey, L"Value", nullptr, &type, reinterpret_cast<LPBYTE>(buf), &bufBytes) == ERROR_SUCCESS &&
+        type == REG_SZ) {
+      if (_wcsicmp(buf, L"Deny") == 0) {
+        ::RegCloseKey(hKey);
+        return true;
+      }
+    }
+    ::RegCloseKey(hKey);
+  }
+
+  // 2. Check Group Policy LetAppsAccessCamera == 2 (Force Deny)
+  HKEY hPol = nullptr;
+  if (::RegOpenKeyExW(
+          HKEY_LOCAL_MACHINE,
+          L"SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy",
+          0,
+          KEY_READ,
+          &hPol) == ERROR_SUCCESS && hPol != nullptr) {
+    DWORD val = 0;
+    DWORD valSize = sizeof(val);
+    DWORD type = 0;
+    if (::RegQueryValueExW(hPol, L"LetAppsAccessCamera", nullptr, &type, reinterpret_cast<LPBYTE>(&val), &valSize) == ERROR_SUCCESS &&
+        type == REG_DWORD && val == 2) {
+      ::RegCloseKey(hPol);
+      return true;
+    }
+    ::RegCloseKey(hPol);
+  }
+
+  return false;
+}
+
+flutter::EncodableMap ForceWindowsCameraAndMicAccess(bool elevateIfBlocked) {
+  const std::wstring kWebcamKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\webcam";
+  const std::wstring kWebcamNonPackaged = kWebcamKey + L"\\NonPackaged";
+  const std::wstring kMicKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\microphone";
+  const std::wstring kMicNonPackaged = kMicKey + L"\\NonPackaged";
+
+  bool hkcuOk = true;
+  hkcuOk = WriteRegAllowString(HKEY_CURRENT_USER, kWebcamKey) && hkcuOk;
+  hkcuOk = WriteRegAllowString(HKEY_CURRENT_USER, kWebcamNonPackaged) && hkcuOk;
+  hkcuOk = WriteRegAllowString(HKEY_CURRENT_USER, kMicKey) && hkcuOk;
+  hkcuOk = WriteRegAllowString(HKEY_CURRENT_USER, kMicNonPackaged) && hkcuOk;
+
+  int subkeysUpdated = 0;
+  subkeysUpdated += ForceAllowAllNonPackagedSubkeys(kWebcamNonPackaged);
+  subkeysUpdated += ForceAllowAllNonPackagedSubkeys(kMicNonPackaged);
+
+  // Also explicitly register current executable path (with '\' replaced by '#') as "Allow"
+  wchar_t exePathBuf[MAX_PATH] = {0};
+  DWORD exeLen = ::GetModuleFileNameW(nullptr, exePathBuf, MAX_PATH);
+  if (exeLen > 0 && exeLen < MAX_PATH) {
+    std::wstring encodedExe(exePathBuf, exeLen);
+    std::replace(encodedExe.begin(), encodedExe.end(), L'\\', L'#');
+    if (WriteRegAllowString(HKEY_CURRENT_USER, kWebcamNonPackaged + L"\\" + encodedExe)) {
+      ++subkeysUpdated;
+    }
+    if (WriteRegAllowString(HKEY_CURRENT_USER, kMicNonPackaged + L"\\" + encodedExe)) {
+      ++subkeysUpdated;
+    }
+  }
+
+  bool hklmBlocked = IsMachineWideCameraBlocked();
+  if (hklmBlocked && elevateIfBlocked) {
+    std::wstring cmdArgs =
+        L"/c reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\webcam\" /v Value /t REG_SZ /d Allow /f"
+        L" & reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\webcam\\NonPackaged\" /v Value /t REG_SZ /d Allow /f"
+        L" & reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\microphone\" /v Value /t REG_SZ /d Allow /f"
+        L" & reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\microphone\\NonPackaged\" /v Value /t REG_SZ /d Allow /f"
+        L" & reg delete \"HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy\" /v LetAppsAccessCamera /f";
+
+    SHELLEXECUTEINFOW sei = {sizeof(sei)};
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    sei.lpVerb = L"runas";
+    sei.lpFile = L"cmd.exe";
+    sei.lpParameters = cmdArgs.c_str();
+    sei.nShow = SW_HIDE;
+    if (::ShellExecuteExW(&sei)) {
+      if (sei.hProcess != nullptr) {
+        ::WaitForSingleObject(sei.hProcess, 15000);
+        ::CloseHandle(sei.hProcess);
+      }
+      hklmBlocked = IsMachineWideCameraBlocked();
+    }
+  }
+
+  return flutter::EncodableMap{
+      {flutter::EncodableValue("hkcuAllowed"), flutter::EncodableValue(hkcuOk)},
+      {flutter::EncodableValue("hklmBlocked"), flutter::EncodableValue(hklmBlocked)},
+      {flutter::EncodableValue("subkeysUpdated"), flutter::EncodableValue(subkeysUpdated)},
+  };
+}
+
+}  // namespace
+
 void RegisterKioskHookChannel(flutter::BinaryMessenger* messenger, HWND windowHandle) {
   if (messenger == nullptr) return;
 
@@ -580,6 +754,21 @@ void RegisterKioskHookChannel(flutter::BinaryMessenger* messenger, HWND windowHa
           result->Success(flutter::EncodableValue(g_isAltTabBlocked));
         } else if (method == "isWindowLocked") {
           result->Success(flutter::EncodableValue(g_isWindowControlsLocked));
+        } else if (method == "forceCameraAccess") {
+          bool elevateIfBlocked = false;
+          const auto* args = call.arguments();
+          if (args != nullptr && std::holds_alternative<flutter::EncodableMap>(*args)) {
+            const auto& map = std::get<flutter::EncodableMap>(*args);
+            auto it = map.find(flutter::EncodableValue("elevateIfBlocked"));
+            if (it != map.end() && std::holds_alternative<bool>(it->second)) {
+              elevateIfBlocked = std::get<bool>(it->second);
+            }
+          }
+          auto statusMap = ForceWindowsCameraAndMicAccess(elevateIfBlocked);
+          result->Success(flutter::EncodableValue(statusMap));
+        } else if (method == "openWindowsCameraSettings") {
+          ::ShellExecuteW(nullptr, L"open", L"ms-settings:privacy-webcam", nullptr, nullptr, SW_SHOWNORMAL);
+          result->Success(flutter::EncodableValue(true));
         } else if (method == "cleanup") {
           CleanupKioskHook();
           result->Success(flutter::EncodableValue(true));
