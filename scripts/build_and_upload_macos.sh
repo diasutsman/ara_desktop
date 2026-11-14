@@ -68,15 +68,16 @@ if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
   exit 0
 fi
 
-# Fallback: gunakan GitHub Token dari env GITHUB_TOKEN / GH_TOKEN atau git credential fill
+# Fallback: gunakan GitHub Token dari env GITHUB_TOKEN / GH_TOKEN atau input manual
 TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
 if [[ -z "$TOKEN" ]]; then
-  CRED_OUT="$(printf "protocol=https\nhost=github.com\n\n" | git credential fill || true)"
-  TOKEN="$(printf '%s\n' "$CRED_OUT" | awk -F= '/^password=/{print $2; exit}')"
+  echo ""
+  read -rsp "Masukkan GitHub Token (input tersembunyi, lalu tekan Enter): " TOKEN
+  echo ""
 fi
 
 if [[ -z "$TOKEN" ]]; then
-  echo "ERROR: GitHub token tidak ditemukan. Jalankan 'gh auth login' atau export GITHUB_TOKEN=ghp_..." >&2
+  echo "ERROR: GitHub token kosong. Proses upload dibatalkan." >&2
   exit 1
 fi
 
