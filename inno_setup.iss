@@ -4,7 +4,7 @@
 ; 2. Open this file in Inno Setup or run via scripts/build_windows.sh or scripts/build_windows.ps1
 
 #ifndef MyAppVersion
-#define MyAppVersion "1.0.5+6"
+#define MyAppVersion "1.0.6+7"
 #endif
 
 #define MyAppName "ARA Assessment"
@@ -24,13 +24,13 @@ AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
 AppCopyright=Copyright (C) 2026 {#MyAppPublisher}. All rights reserved.
-VersionInfoVersion=1.0.5.6
+VersionInfoVersion=1.0.6.7
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription={#MyAppName} Desktop Installer
 VersionInfoTextVersion={#MyAppVersion}
 VersionInfoCopyright=Copyright (C) 2026 {#MyAppPublisher}. All rights reserved.
 VersionInfoProductName={#MyAppName}
-VersionInfoProductVersion=1.0.5.6
+VersionInfoProductVersion=1.0.6.7
 VersionInfoProductTextVersion={#MyAppVersion}
 MinVersion=6.1sp1
 UninstallDisplayName={#MyAppName}
@@ -74,7 +74,6 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
 [Code]
 var
   ShouldDeleteData: Boolean;
-  ForceCameraButton: TNewButton;
 
 procedure ForceAllowNonPackagedSubkeys(const BaseKey: string);
 var
@@ -124,29 +123,6 @@ begin
   if FileExists(PrefPath) then DeleteFile(PrefPath);
   PrefPath := ExpandConstant('{localappdata}\ARA Assessment\WebView2_v2\EBWebView\Default\Preferences');
   if FileExists(PrefPath) then DeleteFile(PrefPath);
-end;
-
-procedure ForceCameraButtonClick(Sender: TObject);
-var
-  ErrorCode: Integer;
-begin
-  ForceAllowCameraAndMic();
-  if MsgBox('Izin Kamera & Mikrofon Windows untuk aplikasi desktop telah dipaksa menjadi ALLOW dan cache izin WebView2 telah di-reset.' + #13#10 + #13#10 + 'Apakah Anda ingin membuka Pengaturan Privasi Kamera Windows untuk memastikan kamera aktif?', mbConfirmation, MB_YESNO) = IDYES then
-  begin
-    ShellExec('open', 'ms-settings:privacy-webcam', '', '', SW_SHOW, ewNoWait, ErrorCode);
-  end;
-end;
-
-procedure InitializeWizard();
-begin
-  ForceCameraButton := TNewButton.Create(WizardForm);
-  ForceCameraButton.Parent := WizardForm.FinishedPage;
-  ForceCameraButton.Caption := 'Force Izinkan Kamera & Mic';
-  ForceCameraButton.Left := ScaleX(0);
-  ForceCameraButton.Top := WizardForm.FinishedPage.ClientHeight - ScaleY(36);
-  ForceCameraButton.Width := ScaleX(200);
-  ForceCameraButton.Height := ScaleY(28);
-  ForceCameraButton.OnClick := @ForceCameraButtonClick;
 end;
 
 function NeedsWebView2Install(): Boolean;
