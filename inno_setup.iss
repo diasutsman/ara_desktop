@@ -4,7 +4,7 @@
 ; 2. Open this file in Inno Setup or run via scripts/build_windows.sh or scripts/build_windows.ps1
 
 #ifndef MyAppVersion
-#define MyAppVersion "1.0.2+3"
+#define MyAppVersion "1.0.4+5"
 #endif
 
 #define MyAppName "ARA Assessment"
@@ -24,13 +24,13 @@ AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
 AppCopyright=Copyright (C) 2026 {#MyAppPublisher}. All rights reserved.
-VersionInfoVersion=1.0.2.3
+VersionInfoVersion=1.0.4.5
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription={#MyAppName} Desktop Installer
 VersionInfoTextVersion={#MyAppVersion}
 VersionInfoCopyright=Copyright (C) 2026 {#MyAppPublisher}. All rights reserved.
 VersionInfoProductName={#MyAppName}
-VersionInfoProductVersion=1.0.2.3
+VersionInfoProductVersion=1.0.4.5
 VersionInfoProductTextVersion={#MyAppVersion}
 MinVersion=6.1sp1
 UninstallDisplayName={#MyAppName}
@@ -73,6 +73,51 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
 [Code]
 var
   ShouldDeleteData: Boolean;
+  ForceCameraButton: TNewButton;
+
+procedure ForceAllowCameraAndMic();
+var
+  PrefPath: string;
+begin
+  // Ensure Windows 10/11 Desktop (NonPackaged) apps are allowed to access Camera & Microphone
+  RegWriteStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam', 'Value', 'Allow');
+  RegWriteStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam\NonPackaged', 'Value', 'Allow');
+  RegWriteStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone', 'Value', 'Allow');
+  RegWriteStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone\NonPackaged', 'Value', 'Allow');
+
+  // Clear any stale WebView2 site permission cache so camera/mic is never stuck on Deny
+  PrefPath := ExpandConstant('{localappdata}\ara_desktop\EBWebView\Default\Preferences');
+  if FileExists(PrefPath) then DeleteFile(PrefPath);
+  PrefPath := ExpandConstant('{localappdata}\ara_desktop.exe.WebView2\EBWebView\Default\Preferences');
+  if FileExists(PrefPath) then DeleteFile(PrefPath);
+  PrefPath := ExpandConstant('{localappdata}\com.ara.assessment\EBWebView\Default\Preferences');
+  if FileExists(PrefPath) then DeleteFile(PrefPath);
+  PrefPath := ExpandConstant('{localappdata}\ARA Assessment\EBWebView\Default\Preferences');
+  if FileExists(PrefPath) then DeleteFile(PrefPath);
+end;
+
+procedure ForceCameraButtonClick(Sender: TObject);
+var
+  ErrorCode: Integer;
+begin
+  ForceAllowCameraAndMic();
+  if MsgBox('Izin Kamera & Mikrofon Windows untuk aplikasi desktop telah dipaksa menjadi ALLOW dan cache izin WebView2 telah di-reset.' + #13#10 + #13#10 + 'Apakah Anda ingin membuka Pengaturan Privasi Kamera Windows untuk memastikan kamera aktif?', mbConfirmation, MB_YESNO) = IDYES then
+  begin
+    ShellExec('open', 'ms-settings:privacy-webcam', '', '', SW_SHOW, ewNoWait, ErrorCode);
+  end;
+end;
+
+procedure InitializeWizard();
+begin
+  ForceCameraButton := TNewButton.Create(WizardForm);
+  ForceCameraButton.Parent := WizardForm.FinishedPage;
+  ForceCameraButton.Caption := 'Force Izinkan Kamera & Mic';
+  ForceCameraButton.Left := ScaleX(0);
+  ForceCameraButton.Top := WizardForm.FinishedPage.ClientHeight - ScaleY(36);
+  ForceCameraButton.Width := ScaleX(200);
+  ForceCameraButton.Height := ScaleY(28);
+  ForceCameraButton.OnClick := @ForceCameraButtonClick;
+end;
 
 function NeedsWebView2Install(): Boolean;
 var
@@ -108,6 +153,8 @@ begin
     // Remove any stale app-folder WebView2 cache from older versions
     LegacyWebViewDir := ExpandConstant('{app}\{#MyAppExeName}.WebView2');
     if DirExists(LegacyWebViewDir) then DelTree(LegacyWebViewDir, True, True, True);
+    // Automatically ensure Windows Camera & Microphone permissions are allowed for desktop apps
+    ForceAllowCameraAndMic();
   end;
 end;
 
