@@ -68,12 +68,22 @@ if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
   exit 0
 fi
 
-# Fallback: gunakan GitHub Token dari env GITHUB_TOKEN / GH_TOKEN atau input manual
+# Fallback: gunakan GitHub Token dari env, macOS Keychain, atau input manual sekali (tersimpan aman di Keychain)
+KEYCHAIN_SERVICE="ara_desktop_github_token"
 TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+
+if [[ -z "$TOKEN" ]]; then
+  TOKEN="$(security find-generic-password -a "$USER" -s "$KEYCHAIN_SERVICE" -w 2>/dev/null || true)"
+fi
+
 if [[ -z "$TOKEN" ]]; then
   echo ""
-  read -rsp "Masukkan GitHub Token (input tersembunyi, lalu tekan Enter): " TOKEN
+  read -rsp "Masukkan GitHub Token (input tersembunyi, akan disimpan aman di macOS Keychain): " TOKEN
   echo ""
+  if [[ -n "$TOKEN" ]]; then
+    security add-generic-password -U -a "$USER" -s "$KEYCHAIN_SERVICE" -w "$TOKEN" >/dev/null 2>&1 || true
+    echo "==> Token berhasil disimpan aman di macOS Keychain."
+  fi
 fi
 
 if [[ -z "$TOKEN" ]]; then
