@@ -9,10 +9,11 @@ set -Eeuo pipefail
 #   ./scripts/build_and_upload_macos.sh
 #
 # Script ini akan:
-# 1. Membaca versi dari pubspec.yaml (misal 1.0.6+7 -> v1.0.6)
-# 2. Menjalankan scripts/build_macos.sh untuk membuat .pkg Universal
-# 3. Menyalin/menamai file sesuai format: ARA_Assessment_Setup_v<semver>.pkg
-# 4. Mengunggah langsung ke GitHub Release v<semver> (membuat release jika belum ada)
+# 1. Memastikan GitHub Token tersedia di awal (dari env, macOS Keychain, atau input manual sekali)
+# 2. Membaca versi dari pubspec.yaml (misal 1.0.6+7 -> v1.0.6)
+# 3. Menjalankan scripts/build_macos.sh untuk membuat .pkg Universal
+# 4. Menyalin/menamai file sesuai format: ARA_Assessment_Setup_v<semver>.pkg
+# 5. Mengunggah langsung ke GitHub Release v<semver> (membuat release jika belum ada)
 # ==============================================================================
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,6 +34,7 @@ VERSION="$(awk -F': *' '/^version:/ {print $2; exit}' pubspec.yaml | tr -d '"\r'
 SEMVER="${VERSION%%+*}"
 TAG="v${SEMVER}"
 TARGET_PKG="build/macos/ARA_Assessment_Setup_${TAG}.pkg"
+REPO="diasutsman/ara_desktop"
 
 echo "=========================================================="
 echo " ARA Assessment macOS Build & Upload"
@@ -40,6 +42,39 @@ echo " Version : $VERSION (Tag: $TAG)"
 echo " Output  : $TARGET_PKG"
 echo "=========================================================="
 
+# 1. Pastikan kredensial GitHub siap di DEPAN sebelum proses build yang lama
+USE_GH_CLI=0
+TOKEN=""
+KEYCHAIN_SERVICE="ara_desktop_github_token"
+
+if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+  USE_GH_CLI=1
+  echo "==> Menggunakan autentikasi GitHub CLI (gh)."
+else
+  TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+  if [[ -z "$TOKEN" ]]; then
+    TOKEN="$(security find-generic-password -a "$USER" -s "$KEYCHAIN_SERVICE" -w 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$TOKEN" ]]; then
+    echo ""
+    read -rsp "Masukkan GitHub Token di awal (input tersembunyi, disimpan aman di macOS Keychain): " TOKEN
+    echo ""
+    if [[ -n "$TOKEN" ]]; then
+      security add-generic-password -U -a "$USER" -s "$KEYCHAIN_SERVICE" -w "$TOKEN" >/dev/null 2>&1 || true
+      echo "==> Token berhasil disimpan aman di macOS Keychain."
+    fi
+  else
+    echo "==> Token GitHub ditemukan di environment / macOS Keychain."
+  fi
+
+  if [[ -z "$TOKEN" ]]; then
+    echo "ERROR: GitHub token kosong. Proses dibatalkan sebelum build." >&2
+    exit 1
+  fi
+fi
+
+# 2. Build .pkg Universal
 chmod +x "$PROJECT_ROOT/scripts/build_macos.sh"
 "$PROJECT_ROOT/scripts/build_macos.sh"
 
@@ -56,9 +91,8 @@ fi
 cp -f "$BUILT_PKG" "$TARGET_PKG"
 echo "==> File PKG siap diunggah: $TARGET_PKG"
 
-REPO="diasutsman/ara_desktop"
-
-if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+# 3. Upload ke GitHub Release
+if [[ "$USE_GH_CLI" -eq 1 ]]; then
   echo "==> Mengunggah menggunakan GitHub CLI (gh)..."
   if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
     gh release create "$TAG" --repo "$REPO" --title "ARA Assessment ${TAG}" --notes "ARA Assessment Desktop ${TAG} (${VERSION})"
@@ -66,29 +100,6 @@ if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
   gh release upload "$TAG" "$TARGET_PKG" --repo "$REPO" --clobber
   echo "==> [SUCCESS] Terunggah ke: https://github.com/${REPO}/releases/download/${TAG}/$(basename "$TARGET_PKG")"
   exit 0
-fi
-
-# Fallback: gunakan GitHub Token dari env, macOS Keychain, atau input manual sekali (tersimpan aman di Keychain)
-KEYCHAIN_SERVICE="ara_desktop_github_token"
-TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
-
-if [[ -z "$TOKEN" ]]; then
-  TOKEN="$(security find-generic-password -a "$USER" -s "$KEYCHAIN_SERVICE" -w 2>/dev/null || true)"
-fi
-
-if [[ -z "$TOKEN" ]]; then
-  echo ""
-  read -rsp "Masukkan GitHub Token (input tersembunyi, akan disimpan aman di macOS Keychain): " TOKEN
-  echo ""
-  if [[ -n "$TOKEN" ]]; then
-    security add-generic-password -U -a "$USER" -s "$KEYCHAIN_SERVICE" -w "$TOKEN" >/dev/null 2>&1 || true
-    echo "==> Token berhasil disimpan aman di macOS Keychain."
-  fi
-fi
-
-if [[ -z "$TOKEN" ]]; then
-  echo "ERROR: GitHub token kosong. Proses upload dibatalkan." >&2
-  exit 1
 fi
 
 echo "==> Mengunggah via GitHub REST API ke release $TAG..."
