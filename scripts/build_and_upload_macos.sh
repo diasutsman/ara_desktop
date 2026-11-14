@@ -121,7 +121,15 @@ fi
 }
 
 FILE_NAME="$(basename "$TARGET_PKG")"
-curl -sS -X POST \
+
+# Jika asset dengan nama yang sama sudah ada di release, hapus dulu agar bisa di-overwrite (clobber)
+EXISTING_ASSET_ID="$(printf '%s' "$RELEASE_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(next((str(a['id']) for a in d.get('assets',[]) if a.get('name')=='$FILE_NAME'), ''))" 2>/dev/null || true)"
+if [[ -n "$EXISTING_ASSET_ID" ]]; then
+  curl -sS -X DELETE -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
+    "https://api.github.com/repos/${REPO}/releases/assets/${EXISTING_ASSET_ID}" >/dev/null || true
+fi
+
+curl -fL -X POST \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/octet-stream" \
   --data-binary "@${TARGET_PKG}" \

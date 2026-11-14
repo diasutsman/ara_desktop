@@ -300,14 +300,14 @@ patch_inappwebview_swift() {
   fi
 }
 
-# Normalize plugin podspec and Package.swift minimum OS X versions to 10.11
+# Normalize plugin podspec and Package.swift minimum OS X versions to 10.14
 patch_plugin_min_macos() {
   local SPEC_FILE="$1"
   [[ -f "$SPEC_FILE" && -w "$SPEC_FILE" ]] || return 0
   /usr/bin/perl -0pi -e '
-    s/s\.platform\s*=\s*:osx\s*,\s*[\x27"][0-9.]+[\x27"]/s.platform = :osx, \x2710.11\x27/g;
-    s/s\.osx\.deployment_target\s*=\s*[\x27"][0-9.]+[\x27"]/s.osx.deployment_target = \x2710.11\x27/g;
-    s/\.macOS\([\x27"][0-9.]+[\x27"]\)/.macOS("10.11")/g;
+    s/s\.platform\s*=\s*:osx\s*,\s*[\x27"][0-9.]+[\x27"]/s.platform = :osx, \x2710.14\x27/g;
+    s/s\.osx\.deployment_target\s*=\s*[\x27"][0-9.]+[\x27"]/s.osx.deployment_target = \x2710.14\x27/g;
+    s/\.macOS\((?:[\x27"][0-9.]+[\x27"]|\.v[0-9_]+)\)/.macOS("10.14")/g;
   ' "$SPEC_FILE" 2>/dev/null || true
 }
 
@@ -331,6 +331,11 @@ if [[ -d "${PUB_CACHE:-$HOME/.pub-cache}/hosted/pub.dev" ]]; then
   done < <(find "${PUB_CACHE:-$HOME/.pub-cache}/hosted/pub.dev" \( -path '*/flutter_inappwebview_macos*/*.podspec' -o -path '*/url_launcher_macos*/*.podspec' -o -path '*/url_launcher_macos*/Package.swift' -o -path '*/screen_retriever_macos*/*.podspec' -o -path '*/screen_retriever_macos*/Package.swift' -o -path '*/window_manager*/*.podspec' -o -path '*/window_manager*/Package.swift' \) -print0 2>/dev/null || true)
 fi
 
+# Clean any stale SwiftPM / module cache compiled with a mismatched deployment target
+rm -rf "$PROJECT_ROOT/build/macos/ModuleCache.noindex" \
+       "$PROJECT_ROOT/build/macos/Build/Products/Release/PackageFrameworks" \
+       "$PROJECT_ROOT/build/macos/Build/Intermediates.noindex" 2>/dev/null || true
+
 if [[ -f "$PROJECT_ROOT/macos/Podfile" ]]; then
   if command -v pod >/dev/null 2>&1; then
     say "Installing CocoaPods dependencies"
@@ -343,11 +348,11 @@ if [[ -f "$PROJECT_ROOT/macos/Podfile" ]]; then
 fi
 
 # ------------------------------------------------------------
-# 8. Prepare standard Xcode architectures (arm64 + x86_64) & OS X 10.11+ target
+# 8. Prepare standard Xcode architectures (arm64 + x86_64) & macOS 10.14 compile target
 # ------------------------------------------------------------
 
 if [[ -f "$PROJECT_PBXPROJ" ]]; then
-  say "Preparing Xcode architecture (Universal arm64 + x86_64) & minimum OS X 10.11 deployment target"
+  say "Preparing Xcode architecture (Universal arm64 + x86_64) & macOS 10.14 compile target"
 
   cp "$PROJECT_PBXPROJ" "$PROJECT_BACKUP"
   PATCHED_PBXPROJ=1
@@ -355,7 +360,7 @@ if [[ -f "$PROJECT_PBXPROJ" ]]; then
   /usr/bin/perl -0pi -e '
     s/^[ \t]*ARCHS = [^;]+;/        ARCHS = "\$(ARCHS_STANDARD)";/mg;
     s/^[ \t]*ONLY_ACTIVE_ARCH = YES;/        ONLY_ACTIVE_ARCH = NO;/mg;
-    s/^[ \t]*MACOSX_DEPLOYMENT_TARGET = [^;]+;/        MACOSX_DEPLOYMENT_TARGET = "10.11";/mg;
+    s/^[ \t]*MACOSX_DEPLOYMENT_TARGET = [^;]+;/        MACOSX_DEPLOYMENT_TARGET = "10.14";/mg;
   ' "$PROJECT_PBXPROJ"
 fi
 
@@ -363,36 +368,46 @@ fi
 # 9. Build Flutter macOS release
 # ------------------------------------------------------------
 
-say "Building Flutter macOS release application (Universal arm64 + x86_64, OS X 10.11+)"
+say "Building Flutter macOS release application (Universal arm64 + x86_64)"
 
-export MACOSX_DEPLOYMENT_TARGET="10.11"
-export FLUTTER_XCODE_MACOSX_DEPLOYMENT_TARGET="10.11"
+export MACOSX_DEPLOYMENT_TARGET="10.14"
+export FLUTTER_XCODE_MACOSX_DEPLOYMENT_TARGET="10.14"
 export FLUTTER_XCODE_ONLY_ACTIVE_ARCH="NO"
 
 # Force processPodsIfNeeded to execute macos/Podfile after injectPlugins so any generated
-# SwiftPM manifest or Pod target is normalized to 10.11 right before xcodebuild runs.
+# SwiftPM manifest or Pod target is normalized to 10.14 right before xcodebuild runs.
 rm -f "$PROJECT_ROOT/macos/Pods/Manifest.lock" 2>/dev/null || true
 
 if ! "${FLUTTER[@]}" build macos --release; then
-  say "Xcode SDK rejected compile-time 10.11 flag; retrying compile with 10.13 and post-patching binaries to 10.11"
-  export MACOSX_DEPLOYMENT_TARGET="10.13"
-  export FLUTTER_XCODE_MACOSX_DEPLOYMENT_TARGET="10.13"
+  say "Retrying compile with macOS 10.15 deployment target and post-patching binaries to 10.11"
+  export MACOSX_DEPLOYMENT_TARGET="10.15"
+  export FLUTTER_XCODE_MACOSX_DEPLOYMENT_TARGET="10.15"
   if [[ -f "$PROJECT_PBXPROJ" ]]; then
     /usr/bin/perl -0pi -e '
-      s/^[ \t]*MACOSX_DEPLOYMENT_TARGET = [^;]+;/        MACOSX_DEPLOYMENT_TARGET = "10.13";/mg;
+      s/^[ \t]*MACOSX_DEPLOYMENT_TARGET = [^;]+;/        MACOSX_DEPLOYMENT_TARGET = "10.15";/mg;
     ' "$PROJECT_PBXPROJ"
+  fi
+  if [[ -f "$PROJECT_ROOT/macos/Runner/Configs/AppInfo.xcconfig" ]]; then
+    /usr/bin/perl -0pi -e '
+      s/^MACOSX_DEPLOYMENT_TARGET\s*=.*$/MACOSX_DEPLOYMENT_TARGET = 10.15/mg;
+    ' "$PROJECT_ROOT/macos/Runner/Configs/AppInfo.xcconfig"
   fi
   if [[ -f "$PROJECT_ROOT/macos/Podfile" ]]; then
     /usr/bin/perl -0pi -e '
-      s/10\.11/10.13/g;
+      s/10\.14/10.15/g;
     ' "$PROJECT_ROOT/macos/Podfile"
     rm -f "$PROJECT_ROOT/macos/Pods/Manifest.lock" 2>/dev/null || true
   fi
   "${FLUTTER[@]}" build macos --release
   if [[ -f "$PROJECT_ROOT/macos/Podfile" ]]; then
     /usr/bin/perl -0pi -e '
-      s/10\.13/10.11/g;
+      s/10\.15/10.14/g;
     ' "$PROJECT_ROOT/macos/Podfile"
+  fi
+  if [[ -f "$PROJECT_ROOT/macos/Runner/Configs/AppInfo.xcconfig" ]]; then
+    /usr/bin/perl -0pi -e '
+      s/^MACOSX_DEPLOYMENT_TARGET\s*=.*$/MACOSX_DEPLOYMENT_TARGET = 10.14/mg;
+    ' "$PROJECT_ROOT/macos/Runner/Configs/AppInfo.xcconfig"
   fi
 fi
 
