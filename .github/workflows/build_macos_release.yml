@@ -17,35 +17,46 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Flutter 3.47.5
+      - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
 
+      - name: Read Version from pubspec.yaml
+        id: ver
+        run: |
+          VERSION="$(awk -F': *' '/^version:/ {print $2; exit}' pubspec.yaml | tr -d '"\r')"
+          SEMVER="${VERSION%%+*}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "semver=$SEMVER" >> "$GITHUB_OUTPUT"
+          echo "tag=v$SEMVER" >> "$GITHUB_OUTPUT"
+
       - name: Build macOS Universal PKG Installer
         run: |
           chmod +x scripts/build_macos.sh
           ./scripts/build_macos.sh
+          PKG_SRC="build/macos/ARA_Assessment_${{ steps.ver.outputs.version }}.pkg"
+          if [ ! -f "$PKG_SRC" ]; then
+            PKG_SRC="$(find build/macos -maxdepth 1 -name '*.pkg' | head -n 1)"
+          fi
+          cp -f "$PKG_SRC" "build/macos/ARA_Assessment_Setup_${{ steps.ver.outputs.tag }}.pkg"
 
       - name: Upload PKG Artifact
         uses: actions/upload-artifact@v4
         with:
           name: macos-pkg-installer
-          path: |
-            build/macos/ARA_Assessment_1.0.4+1.pkg
-            build/macos/ARA_Assessment_1.0.0+1.pkg
+          path: build/macos/ARA_Assessment_Setup_${{ steps.ver.outputs.tag }}.pkg
           if-no-files-found: error
 
-      - name: Upload PKG to GitHub Release v1.0.0 (if same repo)
+      - name: Upload PKG to GitHub Release
         if: github.repository == 'diasutsman/ara_desktop'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ -f "build/macos/ARA_Assessment_1.0.4+1.pkg" ]; then
-            gh release upload v1.0.0 "build/macos/ARA_Assessment_1.0.4+1.pkg" --clobber
+          TAG="${{ steps.ver.outputs.tag }}"
+          PKG_FILE="build/macos/ARA_Assessment_Setup_${TAG}.pkg"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "ARA Assessment ${TAG}" --notes "ARA Assessment Desktop ${TAG}"
           fi
-          if [ -f "build/macos/ARA_Assessment_1.0.0+1.pkg" ]; then
-            gh release upload v1.0.0 "build/macos/ARA_Assessment_1.0.0+1.pkg" --clobber
-          fi
-
+          gh release upload "$TAG" "$PKG_FILE" --clobber
