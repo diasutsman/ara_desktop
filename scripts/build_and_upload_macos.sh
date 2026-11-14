@@ -129,7 +129,9 @@ fi
 
 curl -fL -X POST \
   -H "Authorization: Bearer $TOKEN" \
+  -H "Accept: application/vnd.github+json" \
   -H "Content-Type: application/octet-stream" \
+  -H "Expect:" \
   --data-binary "@${TARGET_PKG}" \
   "${UPLOAD_URL}?name=${FILE_NAME}" >/dev/null
 
