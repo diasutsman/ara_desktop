@@ -42,36 +42,34 @@ echo " Version : $VERSION (Tag: $TAG)"
 echo " Output  : $TARGET_PKG"
 echo "=========================================================="
 
-# 1. Pastikan kredensial GitHub siap di DEPAN sebelum proses build yang lama
+# 1. Minta GitHub Token manual di DEPAN sebelum proses build yang lama
 USE_GH_CLI=0
 TOKEN=""
-KEYCHAIN_SERVICE="ara_desktop_github_token"
 
 if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
   USE_GH_CLI=1
   echo "==> Menggunakan autentikasi GitHub CLI (gh)."
 else
-  TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
-  if [[ -z "$TOKEN" ]]; then
-    TOKEN="$(security find-generic-password -a "$USER" -s "$KEYCHAIN_SERVICE" -w 2>/dev/null || true)"
-  fi
-
-  if [[ -z "$TOKEN" ]]; then
-    echo ""
-    read -rsp "Masukkan GitHub Token di awal (input tersembunyi, disimpan aman di macOS Keychain): " TOKEN
-    echo ""
-    if [[ -n "$TOKEN" ]]; then
-      security add-generic-password -U -a "$USER" -s "$KEYCHAIN_SERVICE" -w "$TOKEN" >/dev/null 2>&1 || true
-      echo "==> Token berhasil disimpan aman di macOS Keychain."
-    fi
-  else
-    echo "==> Token GitHub ditemukan di environment / macOS Keychain."
-  fi
+  echo ""
+  read -rsp "Masukkan GitHub Token di awal (input tersembunyi): " TOKEN
+  echo ""
+  TOKEN="$(printf '%s' "$TOKEN" | tr -d '[:space:]')"
 
   if [[ -z "$TOKEN" ]]; then
     echo "ERROR: GitHub token kosong. Proses dibatalkan sebelum build." >&2
     exit 1
   fi
+
+  # Validasi token di awal sebelum build berjalan
+  HTTP_CODE="$(curl -sS -o /dev/null -w "%{http_code}" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Accept: application/vnd.github+json" \
+    "https://api.github.com/repos/${REPO}")"
+  if [[ "$HTTP_CODE" != "200" ]]; then
+    echo "ERROR: Token GitHub ditolak (HTTP $HTTP_CODE). Pastikan token valid dan punya akses Contents: Read & Write (atau scope repo)." >&2
+    exit 1
+  fi
+  echo "==> Token GitHub valid."
 fi
 
 # 2. Build .pkg Universal
