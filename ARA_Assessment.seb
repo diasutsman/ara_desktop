@@ -106,6 +106,54 @@
 			<key>arguments</key>
 			<array />
 		</dict>
+		<dict>
+			<key>active</key>
+			<true />
+			<key>autostart</key>
+			<false />
+			<key>iconInTaskbar</key>
+			<true />
+			<key>runInBackground</key>
+			<false />
+			<key>allowUserToChooseApp</key>
+			<true />
+			<key>strongKill</key>
+			<false />
+			<key>os</key>
+			<integer>0</integer>
+			<key>executable</key>
+			<string>Microsoft Word</string>
+			<key>identifier</key>
+			<string>com.microsoft.Word</string>
+			<key>title</key>
+			<string>Microsoft Word</string>
+			<key>arguments</key>
+			<array />
+		</dict>
+		<dict>
+			<key>active</key>
+			<true />
+			<key>autostart</key>
+			<false />
+			<key>iconInTaskbar</key>
+			<true />
+			<key>runInBackground</key>
+			<false />
+			<key>allowUserToChooseApp</key>
+			<true />
+			<key>strongKill</key>
+			<false />
+			<key>os</key>
+			<integer>0</integer>
+			<key>executable</key>
+			<string>Microsoft PowerPoint</string>
+			<key>identifier</key>
+			<string>com.microsoft.Powerpoint</string>
+			<key>title</key>
+			<string>Microsoft PowerPoint</string>
+			<key>arguments</key>
+			<array />
+		</dict>
 	</array>
 </dict>
 </plist>
