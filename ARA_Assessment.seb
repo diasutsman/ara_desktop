@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>originatorVersion</key>
+	<string>SEB_Win_3.7.0</string>
+	<key>startURL</key>
+	<string>https://ara-assessment.com/assess</string>
+	<key>sebMode</key>
+	<integer>0</integer>
+	<key>allowQuit</key>
+	<true />
+	<key>ignoreExitKeys</key>
+	<false />
+	<key>hashedQuitPassword</key>
+	<string></string>
+	<key>exitKey1</key>
+	<integer>2</integer>
+	<key>exitKey2</key>
+	<integer>10</integer>
+	<key>exitKey3</key>
+	<integer>5</integer>
+	<key>showTaskBar</key>
+	<true />
+	<key>showReloadButton</key>
+	<true />
+	<key>showTime</key>
+	<true />
+	<key>showInputLanguage</key>
+	<true />
+	<key>allowReloading</key>
+	<true />
+	<key>browserWindowAllowReload</key>
+	<true />
+	<key>newBrowserWindowByLinkPolicy</key>
+	<integer>2</integer>
+	<key>newBrowserWindowAllowReload</key>
+	<true />
+	<key>browserMediaCaptureCamera</key>
+	<true />
+	<key>browserMediaCaptureMicrophone</key>
+	<true />
+	<key>browserMediaCaptureScreen</key>
+	<false />
+	<key>allowScreenSharing</key>
+	<false />
+	<key>allowDisplayMirroring</key>
+	<false />
+	<key>createNewDesktop</key>
+	<true />
+	<key>killExplorerShell</key>
+	<false />
+	<key>allowSwitchToApplications</key>
+	<true />
+	<key>allowFlashFullscreen</key>
+	<false />
+	<key>enableZoomPage</key>
+	<true />
+	<key>enableZoomText</key>
+	<true />
+	<key>allowDownUploads</key>
+	<true />
+	<key>permittedProcesses</key>
+	<array>
+		<dict>
+			<key>active</key>
+			<true />
+			<key>autostart</key>
+			<false />
+			<key>iconInTaskbar</key>
+			<true />
+			<key>runInBackground</key>
+			<false />
+			<key>allowUserToChooseApp</key>
+			<true />
+			<key>strongKill</key>
+			<false />
+			<key>os</key>
+			<integer>1</integer>
+			<key>executable</key>
+			<string>WINWORD.EXE</string>
+			<key>title</key>
+			<string>Microsoft Word</string>
+			<key>arguments</key>
+			<array />
+		</dict>
+		<dict>
+			<key>active</key>
+			<true />
+			<key>autostart</key>
+			<false />
+			<key>iconInTaskbar</key>
+			<true />
+			<key>runInBackground</key>
+			<false />
+			<key>allowUserToChooseApp</key>
+			<true />
+			<key>strongKill</key>
+			<false />
+			<key>os</key>
+			<integer>1</integer>
+			<key>executable</key>
+			<string>POWERPNT.EXE</string>
+			<key>title</key>
+			<string>Microsoft PowerPoint</string>
+			<key>arguments</key>
+			<array />
+		</dict>
+	</array>
+</dict>
+</plist>
