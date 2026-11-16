@@ -266,6 +266,9 @@ namespace flutter_inappwebview_plugin
       webView2Settings->put_IsZoomControlEnabled(settings->supportZoom);
       webView2Settings->put_AreDevToolsEnabled(settings->isInspectable);
       webView2Settings->put_AreDefaultContextMenusEnabled(!settings->disableContextMenu);
+    // Default WebView2 alert/confirm/prompt dialogs are NOT clickable when the WebView is hosted
+    // through a CompositionController (Flutter texture). Route them to Dart via ScriptDialogOpening.
+    failedLog(webView2Settings->put_AreDefaultScriptDialogsEnabled(FALSE));
 
       wil::com_ptr<ICoreWebView2Settings2> webView2Settings2;
       if (succeededOrLog(webView2Settings->QueryInterface(IID_PPV_ARGS(&webView2Settings2)))) {
@@ -916,6 +919,108 @@ namespace flutter_inappwebview_plugin
         }
         else {
           failedLog(args->put_State(COREWEBVIEW2_PERMISSION_STATE_ALLOW));
+        }
+        return S_OK;
+      }
+    ).Get(), nullptr));
+
+    // JS alert()/confirm()/prompt()/beforeunload -> Dart onJsAlert/onJsConfirm/onJsPrompt.
+    // Without this, WebView2 draws its own dialog that cannot be clicked in texture mode and blocks
+    // the page's JS thread forever (e.g. the "finish test" flow never continues).
+    failedLog(webView->add_ScriptDialogOpening(Callback<ICoreWebView2ScriptDialogOpeningEventHandler>(
+      [this](ICoreWebView2* sender, ICoreWebView2ScriptDialogOpeningEventArgs* rawArgs)
+      {
+        wil::com_ptr<ICoreWebView2ScriptDialogOpeningEventArgs> args = rawArgs;
+        COREWEBVIEW2_SCRIPT_DIALOG_KIND kind = COREWEBVIEW2_SCRIPT_DIALOG_KIND_ALERT;
+        failedLog(args->get_Kind(&kind));
+
+        // Never block navigation with an invisible "Leave site?" dialog.
+        if (kind == COREWEBVIEW2_SCRIPT_DIALOG_KIND_BEFOREUNLOAD) {
+          failedLog(args->Accept());
+          return S_OK;
+        }
+
+        wil::unique_cotaskmem_string uri;
+        wil::unique_cotaskmem_string message;
+        wil::unique_cotaskmem_string defaultText;
+        std::string url = SUCCEEDED(args->get_Uri(&uri)) && uri ? wide_to_utf8(uri.get()) : "";
+        std::string msg = SUCCEEDED(args->get_Message(&message)) && message ? wide_to_utf8(message.get()) : "";
+        std::string defaultValue = SUCCEEDED(args->get_DefaultText(&defaultText)) && defaultText ? wide_to_utf8(defaultText.get()) : "";
+
+        wil::com_ptr<ICoreWebView2Deferral> deferral;
+        if (!channelDelegate || !succeededOrLog(args->GetDeferral(&deferral))) {
+          // No Dart side available: accept so the page never stays frozen.
+          failedLog(args->Accept());
+          return S_OK;
+        }
+
+        std::string methodName = kind == COREWEBVIEW2_SCRIPT_DIALOG_KIND_CONFIRM ? "onJsConfirm"
+          : (kind == COREWEBVIEW2_SCRIPT_DIALOG_KIND_PROMPT ? "onJsPrompt" : "onJsAlert");
+
+        auto completed = std::make_shared<bool>(false);
+        auto defaultBehaviour = [args, deferral, completed, defaultValue, kind](const std::optional<const std::shared_ptr<flutter::EncodableMap>>)
+          {
+            if (*completed) return;
+            *completed = true;
+            if (kind == COREWEBVIEW2_SCRIPT_DIALOG_KIND_PROMPT) {
+              failedLog(args->put_ResultText(utf8_to_wide(defaultValue).c_str()));
+            }
+            failedLog(args->Accept());
+            failedLog(deferral->Complete());
+          };
+
+        auto callback = std::make_unique<WebViewChannelDelegate::JsDialogCallback>();
+        callback->nonNullSuccess = [args, deferral, completed, kind](const std::shared_ptr<flutter::EncodableMap> response)
+          {
+            if (*completed) return false;
+            auto handledIt = response->find(flutter::EncodableValue("handledByClient"));
+            bool handled = handledIt != response->end() && std::holds_alternative<bool>(handledIt->second) && std::get<bool>(handledIt->second);
+            if (!handled) {
+              return true; // fall back to defaultBehaviour (accept)
+            }
+            *completed = true;
+            int64_t action = 1; // CANCEL
+            auto actionIt = response->find(flutter::EncodableValue("action"));
+            if (actionIt != response->end()) {
+              if (std::holds_alternative<int32_t>(actionIt->second)) action = std::get<int32_t>(actionIt->second);
+              else if (std::holds_alternative<int64_t>(actionIt->second)) action = std::get<int64_t>(actionIt->second);
+            }
+            if (action == 0) { // CONFIRM
+              if (kind == COREWEBVIEW2_SCRIPT_DIALOG_KIND_PROMPT) {
+                auto valueIt = response->find(flutter::EncodableValue("value"));
+                std::string value = valueIt != response->end() && std::holds_alternative<std::string>(valueIt->second)
+                  ? std::get<std::string>(valueIt->second) : "";
+                failedLog(args->put_ResultText(utf8_to_wide(value).c_str()));
+              }
+              failedLog(args->Accept());
+            }
+            failedLog(deferral->Complete());
+            return false;
+          };
+        callback->defaultBehaviour = defaultBehaviour;
+        callback->error = [defaultBehaviour](const std::string& error_code, const std::string& error_message, const flutter::EncodableValue* error_details)
+          {
+            debugLog(error_code + ", " + error_message);
+            defaultBehaviour(std::nullopt);
+          };
+        channelDelegate->onJsDialog(methodName, url, msg, defaultValue, std::move(callback));
+        return S_OK;
+      }
+    ).Get(), nullptr));
+
+    // Renderer / browser process crash leaves a permanently blank (dark) texture with no event in Dart.
+    // Forward it so the app can rebuild the WebView instead of staying dark until a manual restart.
+    failedLog(webView->add_ProcessFailed(Callback<ICoreWebView2ProcessFailedEventHandler>(
+      [this](ICoreWebView2* sender, ICoreWebView2ProcessFailedEventArgs* args)
+      {
+        COREWEBVIEW2_PROCESS_FAILED_KIND kind = COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED;
+        failedLog(args->get_ProcessFailedKind(&kind));
+        debugLog("WebView2 ProcessFailed kind=" + std::to_string(static_cast<int>(kind)));
+        if (channelDelegate &&
+            (kind == COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED ||
+             kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED ||
+             kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE)) {
+          channelDelegate->onProcessFailed();
         }
         return S_OK;
       }

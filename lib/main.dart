@@ -1,14 +1,20 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 import 'config/env_config.dart';
+import 'services/file_logger.dart';
 import 'services/kiosk_security_service.dart';
+import 'services/webview_environment_service.dart';
 import 'ui/webview_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Persist debugPrint output to a daily log file on desktop for field diagnostics.
+  FileLogger.install();
 
   // Always accept all SSL/TLS certificates globally across Dart HttpClient calls
   HttpOverrides.global = _AraIgnoreSslHttpOverrides();
@@ -34,6 +40,10 @@ void main() async {
       await windowManager.focus();
     });
   }
+
+  // Start creating the Windows WebView2 environment as soon as the host window is shown
+  // (its hidden helper controller needs a live parent HWND), in parallel with kiosk init.
+  unawaited(WebViewEnvironmentService.instance.warmUp());
 
   // Initialize Kiosk & Process Watchdog
   await KioskSecurityService().initialize();

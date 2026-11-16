@@ -49,6 +49,13 @@ namespace flutter_inappwebview_plugin
       ~PermissionRequestCallback() = default;
     };
 
+    // Response for onJsAlert / onJsConfirm / onJsPrompt (raw response map from Dart).
+    class JsDialogCallback : public BaseCallbackResult<const std::shared_ptr<flutter::EncodableMap>> {
+    public:
+      JsDialogCallback();
+      ~JsDialogCallback() = default;
+    };
+
     class ShouldInterceptRequestCallback : public BaseCallbackResult<const std::shared_ptr<WebResourceResponse>> {
     public:
       ShouldInterceptRequestCallback();
@@ -83,6 +90,10 @@ namespace flutter_inappwebview_plugin
     void onCreateWindow(std::shared_ptr<CreateWindowAction> createWindowAction, std::unique_ptr<CreateWindowCallback> callback) const;
     void onCloseWindow() const;
     void onPermissionRequest(const std::string& origin, const std::vector<int64_t>& resources, std::unique_ptr<PermissionRequestCallback> callback) const;
+    // methodName: "onJsAlert" | "onJsConfirm" | "onJsPrompt"
+    void onJsDialog(const std::string& methodName, const std::string& url, const std::string& message, const std::string& defaultValue, std::unique_ptr<JsDialogCallback> callback) const;
+    // WebView2 ProcessFailed (renderer/browser/GPU crash) -> Dart onWebContentProcessDidTerminate.
+    void onProcessFailed() const;
     void shouldInterceptRequest(std::shared_ptr<WebResourceRequest> request, std::unique_ptr<ShouldInterceptRequestCallback> callback) const;
     void onLoadResourceWithCustomScheme(std::shared_ptr<WebResourceRequest> request, std::unique_ptr<LoadResourceWithCustomSchemeCallback> callback) const;
     void onDownloadStartRequest(

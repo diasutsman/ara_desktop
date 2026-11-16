@@ -24,6 +24,10 @@ class AssessmentDetector {
   // JavaScript snippet injected into every web page loaded
   static const String injectedScript = """
     (function() {
+      // Idempotency guard: never install listeners/intervals/patches twice per document.
+      if (window.__araDetectorInstalled) return;
+      window.__araDetectorInstalled = true;
+
       // 1. Apple WKWebView compatibility guards for MediaRecorder & getDisplayMedia:
       // - Prevents macOS WKWebView from popping up a blocking native OS screen-sharing
       //   picker modal sheet during Kiosk mode when startScreenRecordingLite() runs,

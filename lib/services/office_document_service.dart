@@ -285,16 +285,23 @@ class OfficeDocumentService {
 
     if (Platform.isWindows) {
       try {
-        ProcessResult? res;
+        // Native ShellExecute: no cmd.exe console window (which the kiosk watchdog would flag
+        // and fight over foreground with the Office splash screen).
+        const channel = MethodChannel('ara_desktop/kiosk_hook');
+        bool ok = false;
         if (app != null) {
-          // Attempt to open specifically with the configured Office app command (e.g. winword.exe / excel.exe / powerpnt.exe)
-          res = await Process.run('cmd', ['/c', 'start', '', app.windowsCommand, path]);
+          // Open specifically with the configured Office app (winword.exe / excel.exe / powerpnt.exe)
+          ok = await channel.invokeMethod<bool>('shellOpen', {
+                'file': app.windowsCommand,
+                'params': '"$path"',
+              }) ==
+              true;
         }
-        // If not successful or no specific app, open with default registered Windows handler for this file extension
-        if (res == null || res.exitCode != 0) {
-          res = await Process.run('cmd', ['/c', 'start', '', path]);
+        // Fallback: default registered Windows handler for this file extension
+        if (!ok) {
+          ok = await channel.invokeMethod<bool>('shellOpen', {'file': path}) == true;
         }
-        if (res.exitCode == 0) {
+        if (ok) {
           return OfficeLaunchResult(
             success: true,
             message: 'Membuka dokumen di $appName...',

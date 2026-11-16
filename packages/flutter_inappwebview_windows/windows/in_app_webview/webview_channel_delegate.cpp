@@ -58,6 +58,17 @@ namespace flutter_inappwebview_plugin
       };
   }
 
+  WebViewChannelDelegate::JsDialogCallback::JsDialogCallback()
+  {
+    decodeResult = [](const flutter::EncodableValue* value)
+      {
+        if (value == nullptr || !std::holds_alternative<flutter::EncodableMap>(*value)) {
+          return std::optional<std::shared_ptr<flutter::EncodableMap>>{};
+        }
+        return std::optional<std::shared_ptr<flutter::EncodableMap>>{ std::make_shared<flutter::EncodableMap>(std::get<flutter::EncodableMap>(*value)) };
+      };
+  }
+
   WebViewChannelDelegate::ShouldInterceptRequestCallback::ShouldInterceptRequestCallback()
   {
     decodeResult = [](const flutter::EncodableValue* value)
@@ -462,6 +473,30 @@ namespace flutter_inappwebview_plugin
       {"resources", make_fl_value(resources)}
       });
     channel->InvokeMethod("onPermissionRequest", std::move(arguments), std::move(callback));
+  }
+
+  void WebViewChannelDelegate::onJsDialog(const std::string& methodName, const std::string& url, const std::string& message, const std::string& defaultValue, std::unique_ptr<JsDialogCallback> callback) const
+  {
+    if (!channel) {
+      callback->defaultBehaviour(std::nullopt);
+      return;
+    }
+
+    auto arguments = std::make_unique<flutter::EncodableValue>(flutter::EncodableMap{
+      {"url", url},
+      {"message", message},
+      {"defaultValue", defaultValue},
+      {"isMainFrame", true}
+      });
+    channel->InvokeMethod(methodName, std::move(arguments), std::move(callback));
+  }
+
+  void WebViewChannelDelegate::onProcessFailed() const
+  {
+    if (!channel) {
+      return;
+    }
+    channel->InvokeMethod("onWebContentProcessDidTerminate", nullptr);
   }
 
   void WebViewChannelDelegate::shouldInterceptRequest(std::shared_ptr<WebResourceRequest> request, std::unique_ptr<ShouldInterceptRequestCallback> callback) const

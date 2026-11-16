@@ -328,6 +328,14 @@ class KioskSecurityService with WindowListener {
     'wpp.exe',
     'soffice.exe',
     'soffice.bin',
+    // Office helper processes that can own the first foreground window when PowerPoint/Word start
+    // (Click-to-Run bootstrap, update/activation prompts, Office sign-in broker). Blocking these
+    // minimizes the Office modal and leaves the app waiting invisibly.
+    'officeclicktorun.exe',
+    'officec2rclient.exe',
+    'sdxhelper.exe',
+    'msoia.exe',
+    'microsoft.aad.brokerplugin.exe',
     // Essential Windows OS & WebView2 components (file picker, camera/media host, UAC)
     'msedgewebview2.exe',
     'pickerhost.exe',

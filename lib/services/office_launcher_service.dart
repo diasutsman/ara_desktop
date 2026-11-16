@@ -101,6 +101,7 @@ class OfficeLauncherService {
   OfficeLauncherService._internal();
 
   static const MethodChannel _mobileChannel = MethodChannel('ara_desktop/mobile_kiosk');
+  static const MethodChannel _kioskHookChannel = MethodChannel('ara_desktop/kiosk_hook');
 
   /// Launch Microsoft Word
   Future<OfficeLaunchResult> launchWord() => _launchApp(OfficeAppConfig.word);
@@ -173,8 +174,24 @@ class OfficeLauncherService {
         ];
 
         for (final cmd in commandsToTry) {
+          // 1. Preferred: native ShellExecute (no cmd.exe console window). A flashing console
+          //    steals foreground, gets flagged by the kiosk watchdog as an unauthorized app and
+          //    triggers a minimize/force-foreground fight with the Office splash screen.
+          if (!cmd.contains(' ')) {
+            try {
+              final ok = await _kioskHookChannel.invokeMethod<bool>('shellOpen', {'file': cmd});
+              if (ok == true) {
+                debugPrint('[OfficeLauncher] Launched $name via ShellExecute: $cmd');
+                return OfficeLaunchResult(success: true, message: 'Berhasil membuka $name.');
+              }
+            } catch (e) {
+              debugPrint('[OfficeLauncher] shellOpen($cmd) failed: $e');
+            }
+            continue;
+          }
+          // 2. Commands with arguments (e.g. "soffice.exe --writer") still need cmd /c start.
           try {
-            final result = await Process.run('cmd', ['/c', 'start', '', cmd]);
+            final result = await Process.run('cmd', ['/c', 'start', '', ...cmd.split(' ')]);
             if (result.exitCode == 0) {
               debugPrint('[OfficeLauncher] Successfully launched $name via Windows command: $cmd');
               return OfficeLaunchResult(

@@ -769,6 +769,44 @@ void RegisterKioskHookChannel(flutter::BinaryMessenger* messenger, HWND windowHa
         } else if (method == "openWindowsCameraSettings") {
           ::ShellExecuteW(nullptr, L"open", L"ms-settings:privacy-webcam", nullptr, nullptr, SW_SHOWNORMAL);
           result->Success(flutter::EncodableValue(true));
+        } else if (method == "shellOpen") {
+          // Launch an app via ShellExecute (honours "App Paths", e.g. powerpnt.exe) WITHOUT spawning
+          // a cmd.exe console window. SEE_MASK_FLAG_NO_UI suppresses the modal "cannot find" error box.
+          std::string file;
+          std::string params;
+          const auto* args = call.arguments();
+          if (args != nullptr && std::holds_alternative<flutter::EncodableMap>(*args)) {
+            const auto& map = std::get<flutter::EncodableMap>(*args);
+            auto it = map.find(flutter::EncodableValue("file"));
+            if (it != map.end() && std::holds_alternative<std::string>(it->second)) {
+              file = std::get<std::string>(it->second);
+            }
+            auto pit = map.find(flutter::EncodableValue("params"));
+            if (pit != map.end() && std::holds_alternative<std::string>(pit->second)) {
+              params = std::get<std::string>(pit->second);
+            }
+          }
+          auto toWide = [](const std::string& s) {
+            int len = ::MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+            std::wstring w(len > 0 ? len - 1 : 0, L'\0');
+            if (len > 1) {
+              ::MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), len);
+            }
+            return w;
+          };
+          bool ok = false;
+          if (!file.empty()) {
+            std::wstring wfile = toWide(file);
+            std::wstring wparams = toWide(params);
+            SHELLEXECUTEINFOW sei = {sizeof(sei)};
+            sei.fMask = SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC;
+            sei.lpVerb = L"open";
+            sei.lpFile = wfile.c_str();
+            sei.lpParameters = wparams.empty() ? nullptr : wparams.c_str();
+            sei.nShow = SW_SHOWNORMAL;
+            ok = ::ShellExecuteExW(&sei) == TRUE;
+          }
+          result->Success(flutter::EncodableValue(ok));
         } else if (method == "cleanup") {
           CleanupKioskHook();
           result->Success(flutter::EncodableValue(true));

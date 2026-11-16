@@ -14,6 +14,7 @@ import '../services/assessment_detector.dart';
 import '../services/kiosk_security_service.dart';
 import '../services/office_document_service.dart';
 import '../services/office_launcher_service.dart';
+import '../services/webview_environment_service.dart';
 
 class WebViewScreen extends StatefulWidget {
   const WebViewScreen({super.key});
@@ -40,6 +41,9 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
   bool _hasLoadedSuccessfully = false;
   int _autoRetryCount = 0;
   String? _lastRequestedUrl;
+  bool _hasReceivedLoadStart = false;
+  int _processFailRebuilds = 0;
+  DateTime? _lastProcessFailRebuild;
   Timer? _loadingWatchdogTimer;
   int _loadingElapsedSeconds = 0;
 
@@ -83,14 +87,6 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
     unawaited(_initWindowsWebViewEnvironment());
     _startLoadingWatchdog(resetElapsed: true);
   }
-
-  static const String _kWindowsBrowserArgs =
-      '--use-fake-ui-for-media-stream '
-      '--auto-accept-camera-and-microphone-capture '
-      '--ignore-certificate-errors '
-      '--allow-running-insecure-content '
-      '--autoplay-policy=no-user-gesture-required '
-      '--disable-features=msSmartScreenProtection,CalculateNativeWinOcclusion,RendererCodeIntegrity';
 
   String _buildCameraCompatibilityScript() {
     final preferredJson = jsonEncode(_preferredCameraDeviceId ?? '');
@@ -221,38 +217,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
 ''';
   }
 
-  Future<void> _ensureWebView2RuntimeInstalled() async {
-    if (!_isWindows) return;
-    try {
-      final version = await WebViewEnvironment.getAvailableVersion();
-      if (version != null && version.trim().isNotEmpty) {
-        debugPrint('[WebViewScreen] Detected WebView2 Runtime version: $version');
-        return;
-      }
-    } catch (e) {
-      debugPrint('[WebViewScreen] getAvailableVersion check error: $e');
-    }
-
-    // Auto-install bundled WebView2 evergreen bootstrapper if missing on participant laptop
-    try {
-      final exeDir = File(Platform.resolvedExecutable).parent.path;
-      final setupCandidates = [
-        '$exeDir\\MicrosoftEdgeWebView2Setup.exe',
-        '${Directory.current.path}\\windows\\redist\\MicrosoftEdgeWebView2Setup.exe',
-      ];
-      for (final setupPath in setupCandidates) {
-        if (await File(setupPath).exists()) {
-          debugPrint('[WebViewScreen] WebView2 missing; running silent bootstrapper: $setupPath');
-          await Process.run(setupPath, ['/silent', '/install']).timeout(const Duration(seconds: 45));
-          break;
-        }
-      }
-    } catch (e) {
-      debugPrint('[WebViewScreen] WebView2 bootstrapper auto-install error: $e');
-    }
-  }
-
-  Future<void> _initWindowsWebViewEnvironment() async {
+  Future<void> _initWindowsWebViewEnvironment({bool retry = false}) async {
     if (!_isWindows) {
       if (mounted) {
         setState(() {
@@ -263,30 +228,14 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
     }
 
     // Proactively ensure OS-level Windows webcam & mic permissions are Allow on every app launch
-    unawaited(_kioskService.forceWindowsCameraAccess());
-
-    await _ensureWebView2RuntimeInstalled();
-
-    final localAppData = Platform.environment['LOCALAPPDATA'] ?? Directory.systemTemp.path;
-    final primaryFolder = '$localAppData\\ARA Assessment\\WebView2_v2';
-    final fallbackFolder = '$localAppData\\ARA Assessment\\WebView2_Session_$pid';
-
-    for (final folder in [primaryFolder, fallbackFolder]) {
-      try {
-        await Directory(folder).create(recursive: true);
-        _webViewEnvironment = await WebViewEnvironment.create(
-          settings: WebViewEnvironmentSettings(
-            userDataFolder: folder,
-            additionalBrowserArguments: _kWindowsBrowserArgs,
-          ),
-        ).timeout(const Duration(seconds: 25));
-        debugPrint('[WebViewScreen] WebViewEnvironment created at: $folder');
-        break;
-      } catch (e) {
-        debugPrint('[WebViewScreen] WebViewEnvironment failed at $folder ($e)');
-        _webViewEnvironment = null;
-      }
+    if (!retry) {
+      unawaited(_kioskService.forceWindowsCameraAccess());
     }
+
+    // Creation was already kicked off from main(); this normally resolves instantly
+    // or joins the in-flight future instead of starting a fresh sequential chain.
+    final service = WebViewEnvironmentService.instance;
+    _webViewEnvironment = await (retry ? service.retry() : service.warmUp());
 
     if (mounted) {
       setState(() {
@@ -526,7 +475,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
     if (controller == null) {
       debugPrint('[WebViewScreen] Controller is null during reload; rebuilding InAppWebView instance...');
       if (_isWindows && _webViewEnvironment == null) {
-        await _initWindowsWebViewEnvironment();
+        await _initWindowsWebViewEnvironment(retry: true);
       }
       if (mounted) {
         setState(() {
@@ -1528,40 +1477,27 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                 onWebViewCreated: (controller) {
                   _webViewController = controller;
                   _detector.registerJsHandlers(controller);
+                  // Camera compatibility & detection scripts are registered once via initialUserScripts
+                  // (supported natively on all platforms incl. the Windows fork); no dynamic duplicates.
 
-                  // Ensure camera compatibility & detection scripts are also registered dynamically
-                  controller.addUserScript(
-                    userScript: UserScript(
-                      source: _buildCameraCompatibilityScript(),
-                      injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
-                    ),
-                  );
-                  controller.addUserScript(
-                    userScript: UserScript(
-                      source: AssessmentDetector.injectedScript,
-                      injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
-                    ),
-                  );
-
-                  // On Windows, explicitly trigger loadUrl after MethodChannel is ready so navigation events
-                  // are guaranteed to reach Dart even if initialUrlRequest fired before initChannel.
+                  // On Windows, only re-issue the navigation if NO onLoadStart event ever reached Dart
+                  // (initialUrlRequest fired before the MethodChannel was ready). Never decide based on
+                  // getUrl(): it reports about:blank until the first navigation commits (TLS ~0.6s),
+                  // and re-calling loadUrl then aborts the in-flight navigation.
                   if (_isWindows) {
                     final targetUrl = _activeTargetUrl;
                     _lastRequestedUrl = targetUrl;
-                    Future<void>.delayed(const Duration(milliseconds: 150), () async {
-                      if (!mounted) return;
+                    _hasReceivedLoadStart = false;
+                    final createdForKey = _webViewRebuildKey;
+                    Future<void>.delayed(const Duration(milliseconds: 1500), () async {
+                      if (!mounted || _hasReceivedLoadStart || createdForKey != _webViewRebuildKey) return;
+                      debugPrint('[WebViewScreen] No onLoadStart within 1.5s; re-issuing loadUrl($targetUrl)');
                       try {
-                        final cur = await controller.getUrl();
-                        final curStr = cur?.toString().trim() ?? '';
-                        if (curStr.isEmpty || curStr == 'about:blank') {
-                          await controller.loadUrl(
-                            urlRequest: URLRequest(url: WebUri(targetUrl)),
-                          );
-                        }
-                      } catch (_) {
                         await controller.loadUrl(
                           urlRequest: URLRequest(url: WebUri(targetUrl)),
                         );
+                      } catch (e) {
+                        debugPrint('[WebViewScreen] Fallback loadUrl failed: $e');
                       }
                     });
                   }
@@ -1581,6 +1517,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
               shouldOverrideUrlLoading: _isWindows ? null : _handleNavigation,
               onDownloadStartRequest: _handleDownload,
               onLoadStart: (controller, url) {
+                _hasReceivedLoadStart = true;
                 final urlStr = url?.toString().trim() ?? '';
                 if (urlStr.isNotEmpty &&
                     urlStr != 'about:blank' &&
@@ -1649,7 +1586,36 @@ class _WebViewScreenState extends State<WebViewScreen> with WindowListener, Widg
                 debugPrint('[InAppWebView Console] ${consoleMessage.messageLevel}: ${consoleMessage.message}');
               },
               onWebContentProcessDidTerminate: (controller) {
-                debugPrint('[InAppWebView] WebKit WebContent process terminated; recovering page...');
+                debugPrint('[InAppWebView] WebView content/browser process terminated; recovering page...');
+                if (_isWindows) {
+                  // Windows: a dead WebView2 process leaves a permanently dark texture. Recreate the
+                  // native WebView instead of calling loadUrl on a controller that no longer renders.
+                  if (!mounted) return;
+                  final now = DateTime.now();
+                  if (_lastProcessFailRebuild != null && now.difference(_lastProcessFailRebuild!) < const Duration(seconds: 60)) {
+                    _processFailRebuilds++;
+                  } else {
+                    _processFailRebuilds = 1;
+                  }
+                  _lastProcessFailRebuild = now;
+                  if (_processFailRebuilds > 3) {
+                    setState(() {
+                      _isLoading = false;
+                      _hasError = true;
+                      _errorMessage = 'Komponen tampilan berhenti berulang kali. Tutup aplikasi lalu buka kembali.';
+                    });
+                    return;
+                  }
+                  setState(() {
+                    _webViewController = null;
+                    _hasLoadedSuccessfully = false;
+                    _isLoading = true;
+                    _loadProgress = 0.0;
+                    _webViewRebuildKey++;
+                  });
+                  _startLoadingWatchdog(resetElapsed: true);
+                  return;
+                }
                 unawaited(_reloadOrLoadTargetUrl(forceLoadUrl: true));
               },
               onReceivedError: (controller, request, error) {
